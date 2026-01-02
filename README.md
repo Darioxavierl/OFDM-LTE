@@ -2,6 +2,9 @@
 
 A comprehensive Python library for simulating LTE-based OFDM and Single-Carrier FDM (SC-FDM) systems.
 
+> **📢 Latest Update (Jan 2026)**: Module refactored and optimized. All imports now centralized in `config.py`. 
+> See [EXECUTIVE_SUMMARY.md](./EXECUTIVE_SUMMARY.md) for details.
+
 ## Quick Features
 
 ✅ **OFDM & SC-FDM Simulation**
