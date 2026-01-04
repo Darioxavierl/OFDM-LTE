@@ -87,7 +87,7 @@ class RayleighMultiPathChannel:
     """
     
     def __init__(self, snr_db=10.0, fs=None, itu_profile='Vehicular_A', fD=None,
-                 frequency_ghz=None, velocity_kmh=None):
+                 frequency_ghz=None, velocity_kmh=None, verbose=True):
         """
         Inicializa el canal Rayleigh multitrayecto
         
@@ -98,6 +98,7 @@ class RayleighMultiPathChannel:
             fD: Frecuencia Doppler máxima (Hz). Si es None, se calcula automáticamente
             frequency_ghz: Frecuencia portadora en GHz (opcional, usa esta si se proporciona)
             velocity_kmh: Velocidad en km/h (opcional, usa esta si se proporciona)
+            verbose: Si True, imprime información del canal (default True)
         """
         self.snr_db = snr_db
         self.snr_linear = 10 ** (snr_db / 10)
@@ -106,6 +107,7 @@ class RayleighMultiPathChannel:
         self.noise_power = None
         self.frequency_ghz = frequency_ghz
         self.velocity_kmh = velocity_kmh
+        self.verbose = verbose
         
         # Obtener retardos y ganancias del perfil desde config
         delays, gains = self._get_itu_profile_params(itu_profile)
@@ -143,15 +145,17 @@ class RayleighMultiPathChannel:
         # Crear canal Rayleigh
         self.rayleigh = RayleighChannel(fs, fD, delays, gains)
         
-        print(f"[RayleighMultiPathChannel] Perfil: {itu_profile}")
-        print(f"  - Retardos: {[f'{d*1e6:.2f}µs' for d in delays]}")
-        print(f"  - Ganancias: {[f'{g:.1f}dB' for g in gains]}")
-        print(f"  - Doppler máximo: {fD:.1f} Hz")
-        print(f"  - SNR: {snr_db} dB")
-        if frequency_ghz is not None:
-            print(f"  - Frecuencia: {frequency_ghz:.2f} GHz")
-        if velocity_kmh is not None:
-            print(f"  - Velocidad: {velocity_kmh:.1f} km/h")
+        # Imprimir información solo si verbose=True
+        if self.verbose:
+            print(f"[RayleighMultiPathChannel] Perfil: {itu_profile}")
+            print(f"  - Retardos: {[f'{d*1e6:.2f}µs' for d in delays]}")
+            print(f"  - Ganancias: {[f'{g:.1f}dB' for g in gains]}")
+            print(f"  - Doppler máximo: {fD:.1f} Hz")
+            print(f"  - SNR: {snr_db} dB")
+            if frequency_ghz is not None:
+                print(f"  - Frecuencia: {frequency_ghz:.2f} GHz")
+            if velocity_kmh is not None:
+                print(f"  - Velocidad: {velocity_kmh:.1f} km/h")
 
     
     def _get_itu_profile_params(self, profile_name):
@@ -290,7 +294,7 @@ class ChannelSimulator:
     """Simulador de canal que gestiona múltiples canales"""
     
     def __init__(self, channel_type='awgn', snr_db=10.0, fs=None, itu_profile='Vehicular_A',
-                 frequency_ghz=None, velocity_kmh=None):
+                 frequency_ghz=None, velocity_kmh=None, verbose=True):
         """
         Inicializa el simulador de canal
         
@@ -301,6 +305,7 @@ class ChannelSimulator:
             itu_profile: Perfil ITU para Rayleigh multitrayecto
             frequency_ghz: Frecuencia portadora en GHz (para Rayleigh)
             velocity_kmh: Velocidad en km/h (para Rayleigh)
+            verbose: Si True, imprime información del canal (default True)
         """
         self.channel_type = channel_type
         self.fs = fs
@@ -318,7 +323,8 @@ class ChannelSimulator:
             self.channel = RayleighMultiPathChannel(
                 snr_db, fs, itu_profile, 
                 frequency_ghz=frequency_ghz, 
-                velocity_kmh=velocity_kmh
+                velocity_kmh=velocity_kmh,
+                verbose=verbose  # Pass verbose flag
             )
         else:
             raise ValueError(f"Tipo de canal desconocido: {channel_type}")

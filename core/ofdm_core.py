@@ -409,7 +409,8 @@ class OFDMChannel:
                     ch_copy = ChannelSimulator(
                         channel_type=self.channel_type,
                         snr_db=self.snr_db,
-                        fs=self.fs
+                        fs=self.fs,
+                        verbose=False  # Avoid repeated prints
                     )
                     signal_rx = ch_copy.transmit(signal_tx)
                 signals_rx.append(signal_rx)
@@ -422,7 +423,8 @@ class OFDMChannel:
                     fs=self.fs,
                     itu_profile=self.profile,
                     frequency_ghz=self.frequency_ghz,
-                    velocity_kmh=self.velocity_kmh
+                    velocity_kmh=self.velocity_kmh,
+                    verbose=False  # Avoid repeated prints
                 )
                 signal_rx = ch_copy.transmit(signal_tx)
                 signals_rx.append(signal_rx)
@@ -480,6 +482,95 @@ class OFDMChannel:
         h_array = np.ones(len(signal_rx), dtype=complex) * h_normalized
         
         return h_array
+
+    def transmit_mimo(self, signals_tx: List[np.ndarray], num_rx: int = 1) -> Tuple[List[np.ndarray], np.ndarray]:
+        """
+        Transmit signals through MIMO channel (num_tx × num_rx)
+        
+        AGREGAR ESTE MÉTODO A LA CLASE OFDMChannel
+        
+        Parameters:
+        -----------
+        signals_tx : list of np.ndarray
+            List of transmitted signals, one per TX antenna
+        num_rx : int
+            Number of receive antennas
+        
+        Returns:
+        --------
+        tuple : (signals_rx, channel_matrix)
+            - signals_rx: List of received signals (one per RX antenna)
+            - channel_matrix: Channel coefficients, shape (num_rx, num_tx)
+        """
+        num_tx = len(signals_tx)
+        
+        if num_tx == 0:
+            raise ValueError("No transmitted signals provided")
+        
+        signal_length = len(signals_tx[0])
+        
+        # Verify all TX signals have same length
+        for tx_idx, sig in enumerate(signals_tx):
+            if len(sig) != signal_length:
+                raise ValueError(f"TX signal {tx_idx} length mismatch")
+        
+        # Initialize
+        signals_rx = []
+        channel_matrix = np.zeros((num_rx, num_tx), dtype=complex)
+        
+        # For each RX antenna
+        for rx_idx in range(num_rx):
+            rx_signal = np.zeros(signal_length, dtype=complex)
+            
+            for tx_idx in range(num_tx):
+                # Create independent channel for this TX-RX link
+                if self.channel_type == 'awgn':
+                    h = 1.0 + 0j
+                    signal_through_channel = signals_tx[tx_idx] * h
+                else:
+                    # Rayleigh: independent fading per path
+                    from core.channel import ChannelSimulator
+                    
+                    link_channel = ChannelSimulator(
+                        channel_type=self.channel_type,
+                        snr_db=self.snr_db,
+                        fs=self.fs,
+                        itu_profile=self.profile,
+                        frequency_ghz=self.frequency_ghz,
+                        velocity_kmh=self.velocity_kmh,
+                        verbose=False  # Avoid repeated prints
+                    )
+                    
+                    signal_through_channel = link_channel.transmit(signals_tx[tx_idx])
+                    
+                    # Estimate channel coefficient
+                    tx_power = np.mean(np.abs(signals_tx[tx_idx])**2)
+                    rx_power = np.mean(np.abs(signal_through_channel)**2)
+                    
+                    if tx_power > 1e-12:
+                        h_magnitude = np.sqrt(rx_power / tx_power)
+                        correlation = np.mean(signal_through_channel * np.conj(signals_tx[tx_idx]))
+                        h_phase = np.angle(correlation)
+                        h = h_magnitude * np.exp(1j * h_phase)
+                    else:
+                        h = 1.0 + 0j
+                
+                channel_matrix[rx_idx, tx_idx] = h
+                rx_signal += signal_through_channel
+            
+            # Add noise
+            signal_power = np.mean(np.abs(rx_signal)**2)
+            snr_linear = 10 ** (self.snr_db / 10)  # Convert dB to linear scale
+            noise_power = signal_power / snr_linear
+            
+            noise_real = np.random.normal(0, np.sqrt(noise_power/2), signal_length)
+            noise_imag = np.random.normal(0, np.sqrt(noise_power/2), signal_length)
+            noise = noise_real + 1j * noise_imag
+            
+            rx_signal_noisy = rx_signal + noise
+            signals_rx.append(rx_signal_noisy)
+        
+        return signals_rx, channel_matrix
     
     def get_config(self) -> Dict:
         """Get channel configuration"""
@@ -521,7 +612,10 @@ class OFDMSimulator:
                  channel_type: str = 'awgn', mode: str = 'lte',
                  enable_sc_fdm: bool = False, 
                  enable_equalization: bool = True,
-                 num_channels: int = 1):
+                 num_channels: int = 1,
+                 itu_profile: str = 'Pedestrian_A',
+                 frequency_ghz: float = 2.0,
+                 velocity_kmh: float = 0.0):
         """
         Initialize OFDM Simulator
         
@@ -539,6 +633,12 @@ class OFDMSimulator:
             Enable receiver equalization
         num_channels : int
             Number of channel instances (for SIMO/MIMO)
+        itu_profile : str
+            ITU profile for Rayleigh channel (default 'Pedestrian_A')
+        frequency_ghz : float
+            Carrier frequency in GHz (default 2.0)
+        velocity_kmh : float
+            Velocity in km/h for Doppler (default 0.0)
         """
         if config is None:
             config = LTEConfig()
@@ -548,6 +648,9 @@ class OFDMSimulator:
         self.mode = mode
         self.enable_sc_fdm = enable_sc_fdm
         self.enable_equalization = enable_equalization
+        self.itu_profile = itu_profile
+        self.frequency_ghz = frequency_ghz
+        self.velocity_kmh = velocity_kmh
         
         # Initialize TX and RX
         self.tx = OFDMTransmitter(
@@ -573,9 +676,9 @@ class OFDMSimulator:
                     channel_type='rayleigh_mp',
                     snr_db=10.0,
                     fs=fs,
-                    itu_profile='Pedestrian_A',
-                    frequency_ghz=2.0,
-                    velocity_kmh=0
+                    itu_profile=itu_profile,
+                    frequency_ghz=frequency_ghz,
+                    velocity_kmh=velocity_kmh
                 )
             else:
                 ch = OFDMChannel('awgn', snr_db=10.0, fs=fs)
@@ -965,42 +1068,6 @@ class OFDMSimulator:
         self.last_results = results
         return results
     
-    def simulate_mimo(self, bits: np.ndarray, snr_db: float = 10.0,
-                     num_tx: int = 2, num_rx: int = 2) -> Dict:
-        """
-        Simulate MIMO (Multiple-Input Multiple-Output) transmission - Future
-        
-        Configuration: N transmitters, channel matrix, M receivers.
-        Not yet implemented. Placeholder for future development.
-        
-        Parameters:
-        -----------
-        bits : np.ndarray
-            Input bit array (0s and 1s)
-        snr_db : float
-            Signal-to-Noise Ratio in dB
-        num_tx : int
-            Number of transmit antennas
-        num_rx : int
-            Number of receive antennas
-        
-        Returns:
-        --------
-        dict : MIMO simulation results
-        
-        Raises:
-            NotImplementedError: MIMO simulation not yet implemented
-        
-        Implementation Notes:
-            1. Extend TX to support multiple antennas
-            2. Create channel matrix H (num_rx × num_tx)
-            3. Implement space-time coding (Alamouti for 2x2)
-            4. Advanced: SVD-based precoding
-        """
-        raise NotImplementedError(
-            f"MIMO simulation (TX={num_tx}, RX={num_rx}) not yet implemented.\n"
-            "Roadmap: SISO (✓) -> SIMO (next) -> MIMO (future)"
-        )
     
     def _combine_bits_majority(self, bits_rx_list: List[np.ndarray]) -> np.ndarray:
         """
@@ -1167,6 +1234,418 @@ class OFDMSimulator:
             'ber_values': np.array(ber_values),
             'papr_values': np.array(papr_values)
         }
+
+
+
+    def simulate_miso(self, bits: np.ndarray, snr_db: float = 10.0) -> Dict:
+        """
+        Simulate MISO (2 TX, 1 RX) transmission with SFBC Alamouti
+        
+        Supports multi-symbol transmission for large bit streams.
+        
+        Parameters:
+        -----------
+        bits : np.ndarray
+            Input bit array (0s and 1s)
+        snr_db : float
+            Signal-to-Noise Ratio in dB
+        
+        Returns:
+        --------
+        dict : Simulation results
+        """
+        from core.sfbc_alamouti import SFBCAlamouti, SFBCResourceMapper
+        from core.modulator import QAMModulator
+        from core.resource_mapper import ResourceMapper
+        
+        if not isinstance(bits, np.ndarray):
+            bits = np.array(bits, dtype=int)
+        
+        if bits.size == 0:
+            raise ValueError("Bits array cannot be empty")
+        
+        original_num_bits = len(bits)
+        
+        print("\n[MISO] Creating transmitter with 2 TX antennas (SFBC Alamouti)...")
+        
+        # Initialize components
+        qam_modulator = QAMModulator(self.config.modulation)
+        resource_mapper = ResourceMapper(self.config)
+        sfbc_mapper = SFBCResourceMapper(resource_mapper)
+        sfbc_encoder = SFBCAlamouti(num_tx=2, enabled=True)
+        
+        # Calculate capacity per OFDM symbol
+        bits_per_symbol = int(np.log2(len(qam_modulator.constellation)))
+        symbols_per_ofdm = sfbc_mapper.num_data  # Even number of data subcarriers
+        bits_per_ofdm = symbols_per_ofdm * bits_per_symbol
+        
+        num_ofdm_symbols = int(np.ceil(original_num_bits / bits_per_ofdm))
+        
+        print(f"  Data symbols per OFDM: {symbols_per_ofdm}")
+        print(f"  Bits per OFDM symbol: {bits_per_ofdm}")
+        print(f"  Number of OFDM symbols: {num_ofdm_symbols}")
+        
+        # Pad bits to multiple of bits_per_ofdm
+        bits_padded = bits.copy()
+        if len(bits_padded) < num_ofdm_symbols * bits_per_ofdm:
+            bits_padded = np.pad(bits_padded, 
+                                (0, num_ofdm_symbols * bits_per_ofdm - len(bits_padded)), 
+                                'constant')
+        
+        self.channels[0].set_snr(snr_db)
+        
+        # Storage
+        all_grids_tx0 = []
+        all_grids_tx1 = []
+        all_signals_tx0 = []
+        all_signals_tx1 = []
+        all_bits_chunks = []
+        papr_tx0_list = []
+        papr_tx1_list = []
+        
+        # Step 1: Prepare all OFDM symbols (modulation + encoding)
+        for ofdm_idx in range(num_ofdm_symbols):
+            # Extract bits for this OFDM symbol
+            start_bit = ofdm_idx * bits_per_ofdm
+            end_bit = (ofdm_idx + 1) * bits_per_ofdm
+            bits_chunk = bits_padded[start_bit:end_bit]
+            all_bits_chunks.append(bits_chunk)
+            
+            # QAM modulation
+            qam_symbols = qam_modulator.bits_to_symbols(bits_chunk)
+            
+            # SFBC encoding
+            tx0_data, tx1_data = sfbc_encoder.encode(qam_symbols)
+            
+            # Map to grids
+            grid_tx0, grid_tx1 = sfbc_mapper.map_sfbc_to_grid(tx0_data, tx1_data)
+            all_grids_tx0.append(grid_tx0)
+            all_grids_tx1.append(grid_tx1)
+            
+            # IFFT
+            time_tx0 = np.fft.ifft(grid_tx0) * np.sqrt(self.config.N)
+            time_tx1 = np.fft.ifft(grid_tx1) * np.sqrt(self.config.N)
+            
+            # Add CP
+            signal_tx0 = np.concatenate([time_tx0[-self.config.cp_length:], time_tx0])
+            signal_tx1 = np.concatenate([time_tx1[-self.config.cp_length:], time_tx1])
+            
+            all_signals_tx0.append(signal_tx0)
+            all_signals_tx1.append(signal_tx1)
+            
+            # Calculate PAPR
+            power_tx0 = np.abs(signal_tx0) ** 2
+            papr_tx0_db = 10 * np.log10(np.max(power_tx0) / np.mean(power_tx0))
+            papr_tx0_list.append(papr_tx0_db)
+            
+            power_tx1 = np.abs(signal_tx1) ** 2
+            papr_tx1_db = 10 * np.log10(np.max(power_tx1) / np.mean(power_tx1))
+            papr_tx1_list.append(papr_tx1_db)
+        
+        # Step 2: Concatenate all signals for transmission
+        signal_tx0_full = np.concatenate(all_signals_tx0)
+        signal_tx1_full = np.concatenate(all_signals_tx1)
+        
+        # Step 3: Transmit through MIMO channel (all symbols at once)
+        signals_rx, channel_matrix = self.channels[0].transmit_mimo(
+            [signal_tx0_full, signal_tx1_full], num_rx=1
+        )
+        signal_rx = signals_rx[0]
+        
+        # Step 4: Demodulate and estimate channel periodically (like SISO/SIMO)
+        from core.mimo_channel_estimator_periodic import MIMOChannelEstimatorPeriodic
+        
+        mimo_estimator = MIMOChannelEstimatorPeriodic(self.config, slot_size=14)
+        all_grids_rx, H0_per_symbol, H1_per_symbol = mimo_estimator.demodulate_and_estimate_mimo(
+            signal_rx, self.config.cp_length
+        )
+        
+        # Step 5: Decode each OFDM symbol with its periodic channel estimate
+        all_bits_rx = []
+        total_bit_errors = 0
+        
+        for ofdm_idx in range(min(num_ofdm_symbols, len(all_grids_rx))):
+            grid_rx = all_grids_rx[ofdm_idx]
+            bits_chunk = all_bits_chunks[ofdm_idx]
+            
+            # Get channel estimates for this symbol
+            H0_full = H0_per_symbol[ofdm_idx] if ofdm_idx < len(H0_per_symbol) else H0_per_symbol[-1]
+            H1_full = H1_per_symbol[ofdm_idx] if ofdm_idx < len(H1_per_symbol) else H1_per_symbol[-1]
+            
+            # Extract channel at data positions
+            H0_data = H0_full[sfbc_mapper.data_indices]
+            H1_data = H1_full[sfbc_mapper.data_indices]
+            
+            # Extract data and decode
+            data_rx = sfbc_mapper.extract_data_from_grid(grid_rx)
+            decoded_symbols = sfbc_encoder.decode(data_rx, H0_data, H1_data)
+            
+            # Symbol detection
+            constellation = qam_modulator.get_constellation()
+            symbols_detected = np.zeros_like(decoded_symbols)
+            
+            for i, symbol in enumerate(decoded_symbols):
+                distances = np.abs(constellation - symbol)
+                nearest_idx = np.argmin(distances)
+                symbols_detected[i] = constellation[nearest_idx]
+            
+            # Demodulate to bits
+            bits_rx_chunk = qam_modulator.symbols_to_bits(symbols_detected)
+            all_bits_rx.append(bits_rx_chunk)
+            
+            # Calculate errors for this chunk
+            total_bit_errors += np.sum(bits_chunk != bits_rx_chunk)
+        
+        # Concatenate all received bits
+        bits_rx = np.concatenate(all_bits_rx)[:original_num_bits]
+        
+        # Final BER calculation
+        bit_errors = np.sum(bits[:original_num_bits] != bits_rx)
+        ber = bit_errors / original_num_bits if original_num_bits > 0 else 0
+        
+        papr_tx0_avg = np.mean(papr_tx0_list)
+        papr_tx1_avg = np.mean(papr_tx1_list)
+        
+        print(f"  PAPR TX0: {papr_tx0_avg:.2f} dB")
+        print(f"  PAPR TX1: {papr_tx1_avg:.2f} dB")
+        print(f"[MISO] Transmitting through MIMO channel (SNR={snr_db} dB)...")
+        print(f"  Channel H[0,0]={channel_matrix[0,0]:.3f}, H[0,1]={channel_matrix[0,1]:.3f}")
+        print("[MISO] Demodulating with SFBC decoding...")
+        print(f"\n[MISO] BER: {ber:.4e}, Errors: {bit_errors}")
+        
+        results = {
+            'transmitted_bits': int(original_num_bits),
+            'received_bits': int(original_num_bits),
+            'bits_received_array': bits_rx,
+            'bit_errors': int(bit_errors),
+            'errors': int(bit_errors),
+            'ber': float(ber),
+            'snr_db': float(snr_db),
+            'num_tx': 2,
+            'num_rx': 1,
+            'mode': 'MISO-SFBC',
+            'diversity_order': 2,
+            'channel_matrix': channel_matrix,
+            'papr_db_tx0': float(papr_tx0_avg),
+            'papr_db_tx1': float(papr_tx1_avg),
+            'papr_db': float(np.mean([papr_tx0_avg, papr_tx1_avg])),
+            'papr_linear': 10 ** (np.mean([papr_tx0_avg, papr_tx1_avg]) / 10),
+        }
+        
+        self.last_results = results
+        return results
+
+
+    def simulate_mimo(self, bits: np.ndarray, snr_db: float = 10.0, num_rx: int = 2) -> Dict:
+        """
+        Simulate MIMO (2 TX, N RX) transmission with SFBC + diversity
+        
+        Supports multi-symbol transmission for large bit streams.
+        
+        Parameters:
+        -----------
+        bits : np.ndarray
+            Input bit array
+        snr_db : float
+            SNR in dB
+        num_rx : int
+            Number of RX antennas
+        
+        Returns:
+        --------
+        dict : Simulation results
+        """
+        from core.sfbc_alamouti import SFBCAlamouti, SFBCResourceMapper
+        from core.modulator import QAMModulator
+        from core.resource_mapper import ResourceMapper
+        
+        if not isinstance(bits, np.ndarray):
+            bits = np.array(bits, dtype=int)
+        
+        original_num_bits = len(bits)
+        
+        print(f"\n[MIMO] Creating transmitter with 2 TX, {num_rx} RX (SFBC)...")
+        
+        # Initialize components
+        qam_modulator = QAMModulator(self.config.modulation)
+        resource_mapper = ResourceMapper(self.config)
+        sfbc_mapper = SFBCResourceMapper(resource_mapper)
+        sfbc_encoder = SFBCAlamouti(num_tx=2, enabled=True)
+        
+        # Calculate capacity per OFDM symbol
+        bits_per_symbol = int(np.log2(len(qam_modulator.constellation)))
+        symbols_per_ofdm = sfbc_mapper.num_data
+        bits_per_ofdm = symbols_per_ofdm * bits_per_symbol
+        
+        num_ofdm_symbols = int(np.ceil(original_num_bits / bits_per_ofdm))
+        
+        # Pad bits
+        bits_padded = bits.copy()
+        if len(bits_padded) < num_ofdm_symbols * bits_per_ofdm:
+            bits_padded = np.pad(bits_padded, 
+                                (0, num_ofdm_symbols * bits_per_ofdm - len(bits_padded)), 
+                                'constant')
+        
+        self.channels[0].set_snr(snr_db)
+        
+        # Storage
+        all_grids_tx0 = []
+        all_grids_tx1 = []
+        all_signals_tx0 = []
+        all_signals_tx1 = []
+        all_bits_chunks = []
+        papr_tx0_list = []
+        papr_tx1_list = []
+        
+        # Step 1: Prepare all OFDM symbols (modulation + encoding)
+        for ofdm_idx in range(num_ofdm_symbols):
+            # Extract bits for this OFDM symbol
+            start_bit = ofdm_idx * bits_per_ofdm
+            end_bit = (ofdm_idx + 1) * bits_per_ofdm
+            bits_chunk = bits_padded[start_bit:end_bit]
+            all_bits_chunks.append(bits_chunk)
+            
+            # QAM modulation
+            qam_symbols = qam_modulator.bits_to_symbols(bits_chunk)
+            
+            # SFBC encoding
+            tx0_data, tx1_data = sfbc_encoder.encode(qam_symbols)
+            
+            # Map to grids
+            grid_tx0, grid_tx1 = sfbc_mapper.map_sfbc_to_grid(tx0_data, tx1_data)
+            all_grids_tx0.append(grid_tx0)
+            all_grids_tx1.append(grid_tx1)
+            
+            # IFFT
+            time_tx0 = np.fft.ifft(grid_tx0) * np.sqrt(self.config.N)
+            time_tx1 = np.fft.ifft(grid_tx1) * np.sqrt(self.config.N)
+            
+            # Add CP
+            signal_tx0 = np.concatenate([time_tx0[-self.config.cp_length:], time_tx0])
+            signal_tx1 = np.concatenate([time_tx1[-self.config.cp_length:], time_tx1])
+            
+            all_signals_tx0.append(signal_tx0)
+            all_signals_tx1.append(signal_tx1)
+            
+            # PAPR
+            power_tx0 = np.abs(signal_tx0) ** 2
+            papr_tx0_db = 10 * np.log10(np.max(power_tx0) / np.mean(power_tx0))
+            papr_tx0_list.append(papr_tx0_db)
+            
+            power_tx1 = np.abs(signal_tx1) ** 2
+            papr_tx1_db = 10 * np.log10(np.max(power_tx1) / np.mean(power_tx1))
+            papr_tx1_list.append(papr_tx1_db)
+        
+        # Step 2: Concatenate all signals for transmission
+        signal_tx0_full = np.concatenate(all_signals_tx0)
+        signal_tx1_full = np.concatenate(all_signals_tx1)
+        
+        # Step 3: Transmit through MIMO channel (all symbols at once)
+        signals_rx, channel_matrix = self.channels[0].transmit_mimo(
+            [signal_tx0_full, signal_tx1_full], num_rx=num_rx
+        )
+        
+        # Step 4: Demodulate and estimate channel periodically per RX antenna
+        from core.mimo_channel_estimator_periodic import MIMOChannelEstimatorPeriodic
+        
+        mimo_estimator = MIMOChannelEstimatorPeriodic(self.config, slot_size=14)
+        
+        # Process each RX antenna separately
+        all_grids_rx_per_antenna = []
+        H0_per_symbol_per_antenna = []
+        H1_per_symbol_per_antenna = []
+        
+        for rx_idx in range(num_rx):
+            signal_rx = signals_rx[rx_idx]
+            all_grids_rx, H0_per_symbol, H1_per_symbol = mimo_estimator.demodulate_and_estimate_mimo(
+                signal_rx, self.config.cp_length
+            )
+            all_grids_rx_per_antenna.append(all_grids_rx)
+            H0_per_symbol_per_antenna.append(H0_per_symbol)
+            H1_per_symbol_per_antenna.append(H1_per_symbol)
+        
+        # Step 5: Decode each OFDM symbol with periodic estimates (combine across RX)
+        all_bits_rx = []
+        total_bit_errors = 0
+        
+        for ofdm_idx in range(min(num_ofdm_symbols, len(all_grids_rx_per_antenna[0]))):
+            bits_chunk = all_bits_chunks[ofdm_idx]
+            
+            # Decode per RX antenna
+            decoded_per_rx = []
+            
+            for rx_idx in range(num_rx):
+                grid_rx = all_grids_rx_per_antenna[rx_idx][ofdm_idx]
+                
+                # Get channel estimates for this symbol and RX
+                H0_full = H0_per_symbol_per_antenna[rx_idx][ofdm_idx] if ofdm_idx < len(H0_per_symbol_per_antenna[rx_idx]) else H0_per_symbol_per_antenna[rx_idx][-1]
+                H1_full = H1_per_symbol_per_antenna[rx_idx][ofdm_idx] if ofdm_idx < len(H1_per_symbol_per_antenna[rx_idx]) else H1_per_symbol_per_antenna[rx_idx][-1]
+                
+                # Extract channel at data positions
+                H0_data = H0_full[sfbc_mapper.data_indices]
+                H1_data = H1_full[sfbc_mapper.data_indices]
+                
+                # Extract and decode
+                data_rx = sfbc_mapper.extract_data_from_grid(grid_rx)
+                decoded = sfbc_encoder.decode(data_rx, H0_data, H1_data)
+                decoded_per_rx.append(decoded)
+            
+            # Combine (average across RX antennas)
+            decoded_symbols = np.mean(decoded_per_rx, axis=0)
+            
+            # Detection
+            constellation = qam_modulator.get_constellation()
+            symbols_detected = np.zeros_like(decoded_symbols)
+            
+            for i, symbol in enumerate(decoded_symbols):
+                distances = np.abs(constellation - symbol)
+                nearest_idx = np.argmin(distances)
+                symbols_detected[i] = constellation[nearest_idx]
+            
+            bits_rx_chunk = qam_modulator.symbols_to_bits(symbols_detected)
+            all_bits_rx.append(bits_rx_chunk)
+            
+            # Calculate errors for this chunk
+            total_bit_errors += np.sum(bits_chunk != bits_rx_chunk)
+        
+        # Concatenate all received bits
+        bits_rx = np.concatenate(all_bits_rx)[:original_num_bits]
+        
+        # Final BER calculation
+        bit_errors = np.sum(bits[:original_num_bits] != bits_rx)
+        ber = bit_errors / original_num_bits if original_num_bits > 0 else 0
+        
+        diversity_order = 2 * num_rx
+        
+        papr_tx0_avg = np.mean(papr_tx0_list)
+        papr_tx1_avg = np.mean(papr_tx1_list)
+        
+        print(f"[MIMO] Transmitting through 2×{num_rx} channel (SNR={snr_db} dB)...")
+        print(f"  Channel matrix: {channel_matrix.shape}")
+        print(f"[MIMO] Demodulating with {num_rx} RX antennas...")
+        print(f"\n[MIMO] BER: {ber:.4e}, Diversity: {diversity_order}")
+        
+        results = {
+            'transmitted_bits': int(original_num_bits),
+            'received_bits': int(original_num_bits),
+            'bits_received_array': bits_rx,
+            'bit_errors': int(bit_errors),
+            'errors': int(bit_errors),
+            'ber': float(ber),
+            'snr_db': float(snr_db),
+            'num_tx': 2,
+            'num_rx': num_rx,
+            'mode': 'MIMO-SFBC',
+            'diversity_order': diversity_order,
+            'channel_matrix': channel_matrix,
+            'papr_db_tx0': float(papr_tx0_avg),
+            'papr_db_tx1': float(papr_tx1_avg),
+            'papr_db': float(np.mean([papr_tx0_avg, papr_tx1_avg])),
+            'papr_linear': 10 ** (np.mean([papr_tx0_avg, papr_tx1_avg]) / 10),
+        }
+        
+        self.last_results = results
+        return results
     
     def get_config(self) -> LTEConfig:
         """Get simulator configuration"""
