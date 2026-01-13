@@ -782,17 +782,18 @@ class OFDMSimulator:
                             h_estimates_per_antenna: List[List[np.ndarray]], 
                             regularization: float = 1e-10) -> np.ndarray:
         """
-        Maximum Ratio Combining (MRC) in frequency domain
+        Maximum Ratio Combining (MRC) in frequency domain - LTE Standard Implementation
         
         Combines symbols from multiple RX antennas using optimal weights derived 
-        from channel estimates. Works correctly with multiple OFDM symbols.
+        from channel estimates. Implements correct MRC formula per 3GPP TS 36.211.
         
         MRC Formula (per subcarrier k in each OFDM symbol):
-            w_i[k] = conj(H_i[k]) / |H_i[k]|²
-            Y_combined[k] = sum_i(w_i[k] * Y_i[k])
+            Y_combined[k] = Σ_i [conj(H_i[k]) * Y_i[k]] / Σ_i |H_i[k]|²
         
-        The weights w_i contain both phase and amplitude compensation, making 
-        additional ZF equalization unnecessary.
+        This provides optimal SNR when:
+        - Noise is AWGN with equal power per antenna
+        - Channel estimates are accurate
+        - Antennas with weak channels get less weight (automatic noise suppression)
         
         Parameters:
         -----------
@@ -808,6 +809,12 @@ class OFDMSimulator:
         Returns:
         --------
         np.ndarray : MRC-combined symbols, shape (num_total_data_symbols,)
+        
+        Notes:
+        ------
+        - Numerator: sum of conj(H_i) * Y_i (co-phased and weighted)
+        - Denominator: sum of |H_i|² (total received power)
+        - No division by num_rx needed - weights are optimal
         """
         from core.resource_mapper import LTEResourceGrid
         
@@ -824,9 +831,11 @@ class OFDMSimulator:
         if remainder > 0:
             num_ofdm_symbols += 1
         
-        # Initialize combined symbol array
-        symbols_combined = np.zeros(num_total_data_symbols, dtype=complex)
-        power_total = np.zeros(num_total_data_symbols, dtype=float)
+        # Initialize MRC accumulators
+        # Numerator: Σ conj(H_i) * Y_i
+        mrc_numerator = np.zeros(num_total_data_symbols, dtype=complex)
+        # Denominator: Σ |H_i|²
+        mrc_denominator = np.zeros(num_total_data_symbols, dtype=float)
         
         # MRC combining: process each RX antenna
         for antenna_idx in range(num_rx):
@@ -849,28 +858,26 @@ class OFDMSimulator:
                 # Number of data symbols in this OFDM symbol (may be less for last symbol)
                 num_data_this_symbol = min(num_data_per_symbol, num_total_data_symbols - data_idx)
                 
-                # Apply MRC weighting for this symbol's data
+                # Accumulate MRC numerator and denominator for this symbol's data
                 for local_k in range(num_data_this_symbol):
                     global_k = data_idx + local_k
                     
                     if global_k < len(Y_antenna):
                         y_k = Y_antenna[global_k]
-                        h_k = H_data[local_k] if local_k < len(H_data) else 1.0
+                        h_k = H_data[local_k] if local_k < len(H_data) else 1.0 + 0j
                         
-                        # MRC weight: w = conj(H) / |H|²
-                        h_mag_sq = np.abs(h_k) ** 2 + regularization
-                        w_k = np.conj(h_k) / h_mag_sq
+                        # Accumulate numerator: += conj(H) * Y
+                        mrc_numerator[global_k] += np.conj(h_k) * y_k
                         
-                        # Accumulate
-                        symbols_combined[global_k] += w_k * y_k
-                        power_total[global_k] += h_mag_sq
+                        # Accumulate denominator: += |H|²
+                        mrc_denominator[global_k] += np.abs(h_k) ** 2
                 
                 data_idx += num_data_this_symbol
         
-        # Normalize: MRC sums weighted symbols from all antennas
-        # For proper amplitude scaling, divide by num_rx
-        # This gives: E[Y_combined] = E[Y] when channels are unit gain
-        symbols_combined = symbols_combined / num_rx
+        # Final MRC combination: Y_combined = numerator / denominator
+        # Add regularization to prevent division by zero
+        # This is the CORRECT MRC formula per LTE standard
+        symbols_combined = mrc_numerator / (mrc_denominator + regularization)
         
         return symbols_combined
     
