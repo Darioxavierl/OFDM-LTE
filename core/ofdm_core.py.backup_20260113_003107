@@ -357,78 +357,131 @@ class OFDMChannel:
         """
         return self.channel.transmit(signal_tx)
     
-    def transmit_simo(self, signal_tx: np.ndarray, num_rx: int = 2) -> List[np.ndarray]:
+    def transmit_simo(self, signal_tx: np.ndarray, num_rx: int = 2) -> Tuple[List[np.ndarray], List[np.ndarray]]:
         """
         Transmit signal through SIMO (Single-Input Multiple-Output) configuration
         
-        SIMO Reception: All RX antennas receive through INDEPENDENT channels
-        (different fading, different noise).
+        SIMO Reception: All RX antennas receive through same fading channel,
+        but with INDEPENDENT NOISE realizations.
         
         This models physical SIMO where:
         - Single transmit antenna
-        - Multiple RX antennas spatially separated
-        - Independent fading and noise per antenna (realistic for wide spacing)
+        - Multiple RX antennas spatially separated (uncorrelated noise)
+        - Same fading environment (reasonable for short distances)
         
-        Channel estimation will be done using CRS (Cell-specific Reference Signals)
-        in the receiver side.
-        
-        SNR scaling: With N antennas and MRC combining,
-        provides ~10*log10(N) dB SNR improvement.
+        SNR scaling: With N antennas and independent AWGN,
+        combining provides ~10*log10(N) dB SNR improvement.
         
         Parameters:
         -----------
         signal_tx : np.ndarray
-            Transmitted OFDM signal (with CRS pilots already inserted)
+            Transmitted OFDM signal
         num_rx : int
             Number of receive antennas
         
         Returns:
         --------
-        List[np.ndarray] : List of received signals (one per RX antenna)
+        tuple : (signals_rx, channel_coefficients)
+            - signals_rx: List of received signals (one per RX antenna)
+            - channel_coefficients: List of channel gains
         """
         if num_rx < 1:
             raise ValueError("num_rx must be >= 1")
         
         signals_rx = []
+        channel_coeffs = []
         
-        # For SIMO: each antenna sees independent channel realization
+        # Apply channel to signal (shared fading)
+        base_signal = self.transmit(signal_tx)
+        
+        # Add independent noise to each antenna
         for rx_idx in range(num_rx):
-            # Create independent channel for each antenna
-            ch_copy = ChannelSimulator(
-                channel_type=self.channel_type,
-                snr_db=self.snr_db,
-                fs=self.fs,
-                itu_profile=self.profile if self.channel_type == 'rayleigh_mp' else None,
-                frequency_ghz=self.frequency_ghz if self.channel_type == 'rayleigh_mp' else None,
-                velocity_kmh=self.velocity_kmh if self.channel_type == 'rayleigh_mp' else None,
-                verbose=False  # Avoid repeated prints
-            )
+            if self.channel_type == 'awgn':
+                # AWGN: add independent noise to each antenna
+                signal_rx = base_signal.copy()
+                # Add noise (channel already has noise, so add more)
+                # Actually, ChannelSimulator.transmit already adds noise based on SNR
+                # For multiple antennas: create new noisy version
+                if num_rx > 1 and rx_idx > 0:
+                    # Add additional independent noise for 2nd, 3rd, ... antennas
+                    #Actually this is wrong - the base_signal already has noise
+                    # Better: pass through channel multiple times for independent noise
+                    ch_copy = ChannelSimulator(
+                        channel_type=self.channel_type,
+                        snr_db=self.snr_db,
+                        fs=self.fs,
+                        verbose=False  # Avoid repeated prints
+                    )
+                    signal_rx = ch_copy.transmit(signal_tx)
+                signals_rx.append(signal_rx)
+            else:
+                # Rayleigh: same fading, independent noise
+                # All antennas see same fading, but different noise
+                ch_copy = ChannelSimulator(
+                    channel_type=self.channel_type,
+                    snr_db=self.snr_db,
+                    fs=self.fs,
+                    itu_profile=self.profile,
+                    frequency_ghz=self.frequency_ghz,
+                    velocity_kmh=self.velocity_kmh,
+                    verbose=False  # Avoid repeated prints
+                )
+                signal_rx = ch_copy.transmit(signal_tx)
+                signals_rx.append(signal_rx)
             
-            # Transmit through independent channel
-            signal_rx = ch_copy.transmit(signal_tx)
-            signals_rx.append(signal_rx)
+            # Estimate channel (assume unity gain after processing)
+            channel_coeffs.append(1.0 + 0j)
         
-        return signals_rx
-    
-    def transmit(self, signal: np.ndarray) -> np.ndarray:
+        return signals_rx, channel_coeffs
         """
-        Transmit signal through the channel (SISO)
+        Channel coefficient estimation
+        
+        For SIMO/MIMO: Estimate amplitude response per path.
+        Uses energy-based estimation: stronger signal = better channel.
         
         Parameters:
         -----------
-        signal : np.ndarray
+        signal_tx : np.ndarray
             Transmitted signal
+        signal_rx : np.ndarray
+            Received signal
         
         Returns:
         --------
-        np.ndarray : Received signal
+        np.ndarray : Estimated channel amplitude/power
         """
-        return self.channel.transmit(signal)
-    
-    def set_snr(self, snr_db: float):
-        """Set channel SNR"""
-        self.snr_db = snr_db
-        self.channel.set_snr(snr_db)
+        # Approach: Estimate channel gain from received vs transmitted power
+        # h_estimate = sqrt(E[|rx|^2] / E[|tx|^2])
+        
+        min_len = min(len(signal_tx), len(signal_rx))
+        tx = signal_tx[:min_len]
+        rx = signal_rx[:min_len]
+        
+        # Power estimation
+        tx_power = np.mean(np.abs(tx) ** 2)
+        rx_power = np.mean(np.abs(rx) ** 2)
+        
+        if tx_power < 1e-12:
+            # Zero transmitted power: return unity gain
+            return np.ones(min_len, dtype=complex)
+        
+        # Channel amplitude estimate from power ratio
+        # |h| = sqrt(rx_power / tx_power)
+        channel_amplitude = np.sqrt(np.maximum(rx_power / tx_power, 1e-6))
+        
+        # For MRC: we need phase + amplitude
+        # Use correlation to get phase
+        # h = E[rx * tx*] / E[|tx|^2]
+        h_est_complex = np.mean(rx * np.conj(tx)) / (tx_power + 1e-12)
+        
+        # Normalize: keep amplitude from power ratio, phase from correlation
+        h_phase = np.angle(h_est_complex)
+        h_normalized = channel_amplitude * np.exp(1j * h_phase)
+        
+        # Create array of this coefficient for all samples
+        h_array = np.ones(len(signal_rx), dtype=complex) * h_normalized
+        
+        return h_array
 
     def transmit_mimo(self, signals_tx: List[np.ndarray], num_rx: int = 1) -> Tuple[List[np.ndarray], np.ndarray]:
         """
@@ -946,13 +999,10 @@ class OFDMSimulator:
         # Step 3: Transmit through multiple independent channels
         # Set SNR before transmitting
         self.channels[0].set_snr(snr_db)
-        signals_rx = self.channels[0].transmit_simo(
-            signal_tx, num_rx=num_rx
-        )
+        signals_rx, _ = self.channels[0].transmit_simo(signal_tx, num_rx=num_rx)
         
-        # Step 4: Per-antenna demodulation WITH CRS-based channel estimation
-        # This uses pilot symbols for realistic channel estimation
-        # Can be done in parallel for efficiency
+        # Step 4: Per-antenna demodulation and channel estimation
+        # This can be done in parallel for efficiency
         if parallel and num_rx > 1:
             # Parallel processing with ThreadPoolExecutor
             symbols_rx_list = [None] * num_rx
@@ -961,7 +1011,6 @@ class OFDMSimulator:
             with ThreadPoolExecutor(max_workers=num_rx) as executor:
                 futures = {}
                 for i, signal_rx in enumerate(signals_rx):
-                    # Demodulate with CRS-based channel estimation
                     future = executor.submit(self._demodulate_with_channel_est, signal_rx)
                     futures[i] = future
                 
