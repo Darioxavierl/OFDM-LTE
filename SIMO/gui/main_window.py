@@ -70,8 +70,21 @@ class SimulationWorker(QThread):
         
         self.progress.emit(30, "Transmitiendo...")
         
+        # DEBUG: Mostrar información del canal
+        print(f"\n[DEBUG SimulationWorker] Configuración de canal:")
+        print(f"  Tipo: {self.ofdm_system.channel_type}")
+        print(f"  SNR: {self.params['snr_db']} dB")
+        if hasattr(self.ofdm_system, 'itu_profile'):
+            print(f"  Perfil ITU: {self.ofdm_system.itu_profile}")
+            print(f"  Frecuencia: {self.ofdm_system.frequency_ghz} GHz")
+            print(f"  Velocidad: {self.ofdm_system.velocity_kmh} km/h")
+        
         # Usar simulate_simo o simulate_siso según num_rx
         num_rx = self.params.get('num_rx', 1)
+        
+        print(f"\n[DEBUG SimulationWorker] Simulación:")
+        print(f"  Num RX: {num_rx}")
+        print(f"  Modo: {'SISO' if num_rx == 1 else 'SIMO con MRC'}")
         
         if num_rx == 1:
             # SISO
@@ -90,9 +103,11 @@ class SimulationWorker(QThread):
         
         # DEBUG: Verificar bits recibidos
         print(f"\n[DEBUG SimulationWorker] Después de simulación:")
+        print(f"  Num RX usado: {results.get('num_rx', 1)}")
         print(f"  Bits RX (recibidos): {len(results['bits_received_array']):,}")
         print(f"  BER: {results['ber']:.2e}")
         print(f"  Errores: {results.get('bit_errors', 0):,}")
+        print(f"  PAPR: {results.get('papr_db', 0):.2f} dB")
         
         if 'metadata' in self.params:
             # Reconstruir imagen
@@ -536,7 +551,7 @@ class OFDMSimulatorGUI(QMainWindow):
         layout.addWidget(QLabel("Velocidad (km/h):"), 9, 0)
         self.velocity_spin = QSpinBox()
         self.velocity_spin.setRange(0, 500)
-        self.velocity_spin.setValue(120)
+        self.velocity_spin.setValue(3)  # Valor por defecto: 3 km/h (peatón)
         self.velocity_spin.valueChanged.connect(self.on_velocity_changed)
         self.velocity_spin.setEnabled(False)
         layout.addWidget(self.velocity_spin, 9, 1)
@@ -823,8 +838,11 @@ class OFDMSimulatorGUI(QMainWindow):
         self.results_tabs.setCurrentWidget(self.metrics_panel)
         
         # Graficar constelación
-        if 'symbols_tx' in results and 'symbols_rx' in results:
-            self.plot_constellation(results['symbols_tx'], results['symbols_rx'])
+        # Para SISO: usa 'symbols_rx'
+        # Para SIMO: usa 'symbols_rx_combined'
+        symbols_rx = results.get('symbols_rx') or results.get('symbols_rx_combined')
+        if 'symbols_tx' in results and symbols_rx is not None:
+            self.plot_constellation(results['symbols_tx'], symbols_rx)
         
         # Graficar PAPR
         if 'papr_values' in results:

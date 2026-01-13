@@ -199,16 +199,16 @@ class ImageComparisonWidget(QWidget):
         
         # Métricas de calidad
         self.psnr_label = QLabel("PSNR: --")
-        self.ssim_label = QLabel("SSIM: --")
+        #self.ssim_label = QLabel("SSIM: --")
         
         metric_style = "font-size: 10pt; padding: 3px;"
         self.psnr_label.setStyleSheet(metric_style)
-        self.ssim_label.setStyleSheet(metric_style)
+        #self.ssim_label.setStyleSheet(metric_style)
         
         right_panel.addWidget(right_title)
         right_panel.addWidget(self.received_label)
         right_panel.addWidget(self.psnr_label)
-        right_panel.addWidget(self.ssim_label)
+        #right_panel.addWidget(self.ssim_label)
         
         # Agregar paneles al layout principal
         layout.addLayout(left_panel)
@@ -244,15 +244,15 @@ class ImageComparisonWidget(QWidget):
         if psnr is not None:
             self.psnr_label.setText(f"PSNR: {psnr:.2f} dB")
         
-        if ssim is not None:
-            self.ssim_label.setText(f"SSIM: {ssim:.4f}")
+        #if ssim is not None:
+        #    self.ssim_label.setText(f"SSIM: {ssim:.4f}")
     
     def clear(self):
         """Limpia las imágenes y widgets adicionales"""
         self.original_label.clear()
         self.received_label.clear()
         self.psnr_label.setText("PSNR: --")
-        self.ssim_label.setText("SSIM: --")
+        #self.ssim_label.setText("SSIM: --")
         
         # Limpiar cualquier widget adicional (canvas de matplotlib)
         layout = self.layout()
