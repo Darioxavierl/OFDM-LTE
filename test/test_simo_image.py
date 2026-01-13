@@ -29,10 +29,19 @@ from core.ofdm_core import OFDMSimulator
 from utils.image_processing import ImageProcessor
 
 
-def test_simo_configuration(num_rx_values=[1, 2, 4], 
+# ============================================================================
+# TEST CONFIGURATION - Global parameters for consistent testing
+# ============================================================================
+TEST_SNR_DB = 15.0  # Standard SNR for all tests (AWGN and Rayleigh)
+TEST_NUM_RX = [1, 2, 4]  # Antenna configurations to test
+TEST_IMAGE = 'img/entre-ciel-et-terre.jpg'  # Test image path
+# ============================================================================
+
+
+def test_simo_configuration(num_rx_values=TEST_NUM_RX, 
                             channel_type='awgn',
-                            snr_db=20.0,
-                            image_path='img/entre-ciel-et-terre.jpg'):
+                            snr_db=TEST_SNR_DB,
+                            image_path=TEST_IMAGE):
     """
     Test SIMO reception with different antenna counts
     
@@ -222,10 +231,10 @@ def main():
     
     try:
         results_awgn = test_simo_configuration(
-            num_rx_values=[1, 2, 4],
+            num_rx_values=TEST_NUM_RX,
             channel_type='awgn',
-            snr_db=20.0,
-            image_path='img/entre-ciel-et-terre.jpg'
+            snr_db=TEST_SNR_DB,
+            image_path=TEST_IMAGE
         )
         
         print("\n[OK] AWGN test completed successfully")
@@ -245,10 +254,10 @@ def main():
     
     try:
         results_rayleigh = test_simo_configuration(
-            num_rx_values=[1, 2, 4],
+            num_rx_values=TEST_NUM_RX,
             channel_type='rayleigh_mp',
-            snr_db=20.0,
-            image_path='img/entre-ciel-et-terre.jpg'
+            snr_db=TEST_SNR_DB,
+            image_path=TEST_IMAGE
         )
         
         print("\n[OK] Rayleigh test completed successfully")
