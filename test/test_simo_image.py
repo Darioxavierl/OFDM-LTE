@@ -33,15 +33,19 @@ from utils.image_processing import ImageProcessor
 # TEST CONFIGURATION - Global parameters for consistent testing
 # ============================================================================
 TEST_SNR_DB = 15.0  # Standard SNR for all tests (AWGN and Rayleigh)
-TEST_NUM_RX = [1, 2, 4]  # Antenna configurations to test
+TEST_NUM_RX = [1, 2, 4, 8]  # Antenna configurations to test
 TEST_IMAGE = 'img/entre-ciel-et-terre.jpg'  # Test image path
+TEST_VELOCITY_KMH = 3.0  # Mobile velocity for Rayleigh multipath (km/h)
+TEST_FREQUENCY_GHZ = 2.0  # Carrier frequency for Rayleigh multipath (GHz)
 # ============================================================================
 
 
 def test_simo_configuration(num_rx_values=TEST_NUM_RX, 
                             channel_type='awgn',
                             snr_db=TEST_SNR_DB,
-                            image_path=TEST_IMAGE):
+                            image_path=TEST_IMAGE,
+                            velocity_kmh=TEST_VELOCITY_KMH,
+                            frequency_ghz=TEST_FREQUENCY_GHZ):
     """
     Test SIMO reception with different antenna counts
     
@@ -55,6 +59,10 @@ def test_simo_configuration(num_rx_values=TEST_NUM_RX,
         Signal-to-Noise Ratio in dB
     image_path : str
         Path to image file
+    velocity_kmh : float
+        Mobile velocity for Rayleigh multipath (km/h)
+    frequency_ghz : float
+        Carrier frequency for Rayleigh multipath (GHz)
     """
     
     print("\n" + "="*76)
@@ -90,13 +98,31 @@ def test_simo_configuration(num_rx_values=TEST_NUM_RX,
         print("="*76)
         
         # Create simulator for this configuration
-        sim = OFDMSimulator(
-            config=config,
-            channel_type=channel_type,
-            mode='lte',
-            enable_equalization=True,
-            num_channels=1
-        )
+        if channel_type == 'rayleigh_mp':
+            # Rayleigh multipath with ITU-R M.1225 profile
+            sim = OFDMSimulator(
+                config=config,
+                channel_type=channel_type,
+                mode='lte',
+                enable_equalization=True,
+                num_channels=1,
+                itu_profile='Pedestrian_A',
+                frequency_ghz=frequency_ghz,
+                velocity_kmh=velocity_kmh
+            )
+            print(f"  Channel: Rayleigh multipath (ITU-R M.1225 Pedestrian A)")
+            print(f"  Frequency: {frequency_ghz} GHz")
+            print(f"  Velocity: {velocity_kmh} km/h")
+        else:
+            # AWGN channel
+            sim = OFDMSimulator(
+                config=config,
+                channel_type=channel_type,
+                mode='lte',
+                enable_equalization=True,
+                num_channels=1
+            )
+            print(f"  Channel: AWGN")
         
         # Run simulation
         if num_rx == 1:
@@ -257,7 +283,9 @@ def main():
             num_rx_values=TEST_NUM_RX,
             channel_type='rayleigh_mp',
             snr_db=TEST_SNR_DB,
-            image_path=TEST_IMAGE
+            image_path=TEST_IMAGE,
+            velocity_kmh=TEST_VELOCITY_KMH,
+            frequency_ghz=TEST_FREQUENCY_GHZ
         )
         
         print("\n[OK] Rayleigh test completed successfully")
