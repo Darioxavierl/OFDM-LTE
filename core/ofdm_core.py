@@ -472,15 +472,28 @@ class OFDMChannel:
             for tx_idx in range(num_tx):
                 # Create independent channel for this TX-RX link
                 if self.channel_type == 'awgn':
-                    h = 1.0 + 0j
+                    # LTE-like AWGN MIMO channel with spatial diversity
+                    # Use different phase per TX antenna to enable diversity gain
+                    # TX0: reference (0°), TX1: 90° phase, TX2: 180°, etc.
+                    if tx_idx == 0:
+                        h = 1.0 + 0j  # Reference antenna
+                    else:
+                        # Phase separation for spatial diversity
+                        # For 2 TX: 0° and 90° (orthogonal)
+                        # For 4 TX: 0°, 90°, 180°, 270° (orthogonal)
+                        h_phase = (tx_idx * np.pi / 2)  # 90° per antenna
+                        h = np.exp(1j * h_phase)
+                    
                     signal_through_channel = signals_tx[tx_idx] * h
                 else:
                     # Rayleigh: independent fading per path
+                    # Use very high SNR (no noise) because noise will be added later
+                    # This avoids double-noising and allows correct SNR control
                     from core.channel import ChannelSimulator
                     
                     link_channel = ChannelSimulator(
                         channel_type=self.channel_type,
-                        snr_db=self.snr_db,
+                        snr_db=100.0,  # Very high SNR = fading only, no noise
                         fs=self.fs,
                         itu_profile=self.profile,
                         frequency_ghz=self.frequency_ghz,
@@ -505,10 +518,19 @@ class OFDMChannel:
                 channel_matrix[rx_idx, tx_idx] = h
                 rx_signal += signal_through_channel
             
-            # Add noise
+            # Add noise based on channel type
+            # For MIMO: normalize SNR by number of TX antennas to maintain fair comparison
             signal_power = np.mean(np.abs(rx_signal)**2)
             snr_linear = 10 ** (self.snr_db / 10)  # Convert dB to linear scale
-            noise_power = signal_power / snr_linear
+            
+            if self.channel_type == 'awgn':
+                # For AWGN: Each TX transmits with power P/num_tx
+                # Total received power is sum of all contributions
+                noise_power = (signal_power / num_tx) / snr_linear
+            else:
+                # For Rayleigh: Fading channels created with SNR=100dB (no noise)
+                # Add noise here with correct SNR (normalized by num_tx)
+                noise_power = (signal_power / num_tx) / snr_linear
             
             noise_real = np.random.normal(0, np.sqrt(noise_power/2), signal_length)
             noise_imag = np.random.normal(0, np.sqrt(noise_power/2), signal_length)

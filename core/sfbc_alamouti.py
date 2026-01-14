@@ -81,9 +81,12 @@ class SFBCAlamouti:
                rx_symbols: np.ndarray,
                H0: np.ndarray,
                H1: np.ndarray,
-               noise_var: float = 1e-6) -> np.ndarray:
+               regularization: float = 1e-10) -> np.ndarray:
         """
-        Decode received symbols using Alamouti combining
+        Decode received symbols using Alamouti combining (3GPP TS 36.211)
+        
+        Space-Frequency Block Coding (SFBC) with Alamouti scheme for 2 TX antennas.
+        Uses per-subcarrier channel estimates for optimal combining.
         
         Parameters:
         -----------
@@ -93,12 +96,26 @@ class SFBCAlamouti:
             Channel estimate for TX antenna 0, shape (N,)
         H1 : np.ndarray
             Channel estimate for TX antenna 1, shape (N,)
-        noise_var : float
-            Noise variance for normalization
+        regularization : float
+            Small value to avoid division by zero (default: 1e-10)
         
         Returns:
         --------
         np.ndarray : Decoded data symbols, shape (N,)
+        
+        Notes:
+        ------
+        Alamouti transmission (subcarrier k, k+1):
+          TX0: [  s0,  -conj(s1) ]
+          TX1: [  s1,   conj(s0) ]
+        
+        Reception:
+          r_k   = h0_k * s0 + h1_k * s1 + n_k
+          r_k+1 = h0_k+1 * (-conj(s1)) + h1_k+1 * conj(s0) + n_k+1
+        
+        Optimal combining (MRC-like):
+          s0 = [conj(h0_k)*r_k + h1_k+1*conj(r_k+1)] / (|h0|² + |h1|²)
+          s1 = [conj(h1_k)*r_k - h0_k+1*conj(r_k+1)] / (|h0|² + |h1|²)
         """
         if not self.enabled:
             return rx_symbols.copy()
@@ -116,21 +133,29 @@ class SFBCAlamouti:
             r_k = rx_symbols[i]
             r_k1 = rx_symbols[i + 1]
             
-            # For flat fading channel, h0_k ≈ h0_k1 and h1_k ≈ h1_k1
-            # Use average of adjacent subcarriers
-            h0 = (H0[i] + H0[i + 1]) / 2
-            h1 = (H1[i] + H1[i + 1]) / 2
+            # Use per-subcarrier channel estimates (more accurate for frequency-selective channels)
+            h0_k = H0[i]
+            h1_k = H1[i]
+            h0_k1 = H0[i + 1]
+            h1_k1 = H1[i + 1]
             
-            # Alamouti combining (correct formula)
-            # Received: r_k = h0*s0 + h1*s1
-            #           r_k1 = -h0*conj(s1) + h1*conj(s0)
-            # Decode:   s0 = conj(h0)*r_k + h1*conj(r_k1)
-            #           s1 = conj(h1)*r_k - h0*conj(r_k1)
-            s0_combined = np.conj(h0) * r_k + h1 * np.conj(r_k1)
-            s1_combined = np.conj(h1) * r_k - h0 * np.conj(r_k1)
+            # Alamouti combining (optimal MRC combining)
+            # s0 contribution from both received symbols:
+            #   From r_k:   conj(h0_k) * r_k
+            #   From r_k+1: h1_k+1 * conj(r_k+1)
+            # s1 contribution from both received symbols:
+            #   From r_k:   conj(h1_k) * r_k
+            #   From r_k+1: -h0_k+1 * conj(r_k+1)
             
-            # Normalization
-            norm = np.abs(h0)**2 + np.abs(h1)**2 + noise_var
+            s0_combined = np.conj(h0_k) * r_k + h1_k1 * np.conj(r_k1)
+            s1_combined = np.conj(h1_k) * r_k - h0_k1 * np.conj(r_k1)
+            
+            # Normalization: divide by sum of squared channel magnitudes
+            # For flat fading (h0_k ≈ h0_k+1, h1_k ≈ h1_k+1), this simplifies to |h0|² + |h1|²
+            # For frequency-selective channels, use average for normalization
+            h0_avg = (h0_k + h0_k1) / 2
+            h1_avg = (h1_k + h1_k1) / 2
+            norm = np.abs(h0_avg)**2 + np.abs(h1_avg)**2 + regularization
             
             decoded_symbols[i] = s0_combined / norm
             decoded_symbols[i + 1] = s1_combined / norm
