@@ -299,7 +299,7 @@ def main():
         # Add velocity for Rayleigh to see time-variant channel effects
         if channel_type == 'rayleigh_mp':
             print(f"\n[INFO] Testing with Doppler: 30 km/h @ 2 GHz")
-            print(f"       (fD ≈ 55.6 Hz - channel varies over time)")
+            print(f"       (fD ~ 55.6 Hz - channel varies over time)")  # ASCII-safe
         
         results = {}
         
