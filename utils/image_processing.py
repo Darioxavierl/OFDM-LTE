@@ -130,6 +130,45 @@ class ImageProcessor:
         return psnr
     
     @staticmethod
+    def calculate_psnr_bits(original_bits, reconstructed_bits):
+        """
+        Calcula PSNR directamente desde arrays de bits
+        
+        Args:
+            original_bits: Bits originales (numpy array)
+            reconstructed_bits: Bits reconstruidos (numpy array)
+            
+        Returns:
+            PSNR en dB
+        """
+        # Asegurar que tienen el mismo tamaño
+        min_len = min(len(original_bits), len(reconstructed_bits))
+        original_bits = original_bits[:min_len]
+        reconstructed_bits = reconstructed_bits[:min_len]
+        
+        # Convertir bits a bytes
+        # Pad si no es múltiplo de 8
+        pad_len = (8 - len(original_bits) % 8) % 8
+        if pad_len > 0:
+            original_bits = np.concatenate([original_bits, np.zeros(pad_len, dtype=int)])
+            reconstructed_bits = np.concatenate([reconstructed_bits, np.zeros(pad_len, dtype=int)])
+        
+        original_bytes = np.packbits(original_bits)
+        reconstructed_bytes = np.packbits(reconstructed_bits)
+        
+        # Calcular MSE
+        mse = np.mean((original_bytes.astype(float) - reconstructed_bytes.astype(float)) ** 2)
+        
+        if mse == 0:
+            return float('inf')
+        
+        # PSNR
+        max_value = 255.0
+        psnr = 20 * np.log10(max_value / np.sqrt(mse))
+        
+        return psnr
+    
+    @staticmethod
     def calculate_ssim(original_img, reconstructed_img):
         """
         Calcula el Structural Similarity Index entre dos imágenes
@@ -193,3 +232,24 @@ class ImageProcessor:
         comparison.save(output_path)
         
         return comparison
+
+    @staticmethod
+    def load_image_pil(image_path):
+        """
+        Carga una imagen y retorna objeto PIL Image.
+        
+        Args:
+            image_path: Ruta de la imagen
+            
+        Returns:
+            PIL.Image: Imagen cargada
+        """
+        img = Image.open(image_path)
+        
+        # Convertir a RGB si es necesario
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        
+        return img
+
+

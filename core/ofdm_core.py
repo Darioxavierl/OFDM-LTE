@@ -1627,6 +1627,225 @@ class OFDMSimulator:
         self.last_results = results
         return results
     
+    def simulate_beamforming(self, 
+                            bits: np.ndarray, 
+                            snr_db: float = 10.0, 
+                            num_tx: int = 2,
+                            num_rx: int = 1,
+                            codebook_type: str = 'TM6',
+                            velocity_kmh: float = 3.0,
+                            update_mode: str = 'adaptive') -> Dict:
+        """
+        Simulate downlink transmission with beamforming precoding.
+        
+        Uses LTE codebook-based precoding with CSI feedback simulation.
+        
+        Parameters:
+        -----------
+        bits : np.ndarray
+            Data bits to transmit
+        snr_db : float
+            Signal-to-noise ratio in dB
+        num_tx : int
+            Number of TX antennas (2, 4, 8)
+        num_rx : int
+            Number of RX antennas (1, 2, 4, 8)
+        codebook_type : str
+            'TM6' (rank-1) or 'TM4' (rank-1/2)
+        velocity_kmh : float
+            UE velocity in km/h (for adaptive precoder update)
+        update_mode : str
+            'adaptive' (based on coherence time) or 'static' (update once)
+        
+        Returns:
+        --------
+        dict : Simulation results with BER, beamforming gain, etc.
+        """
+        from core.beamforming_precoder import BeamformingPrecoder, AdaptiveBeamforming
+        from core.csi_feedback import CSIFeedback
+        
+        print(f"\n{'='*70}")
+        print(f"[BEAMFORMING] Simulation Start")
+        print(f"{'='*70}")
+        print(f"  Configuration: {num_tx}×{num_rx} ({num_tx} TX, {num_rx} RX)")
+        print(f"  Codebook: {codebook_type}")
+        print(f"  Velocity: {velocity_kmh} km/h")
+        print(f"  SNR: {snr_db} dB")
+        
+        # Store original bits count
+        original_num_bits = len(bits)
+        
+        # Initialize components
+        csi_feedback = CSIFeedback(num_tx, num_rx, codebook_type=codebook_type)
+        
+        if update_mode == 'adaptive':
+            precoder = AdaptiveBeamforming(
+                num_tx=num_tx,
+                velocity_kmh=velocity_kmh,
+                frequency_ghz=2.0,  # Asume 2 GHz
+                num_layers=1
+            )
+        else:
+            precoder = BeamformingPrecoder(num_tx=num_tx, num_layers=1, precoder_type='MRT')
+        
+        # Create resource mapper
+        from core.resource_mapper import ResourceMapper
+        from core.modulator import QAMModulator
+        resource_mapper = ResourceMapper(self.config)
+        qam_modulator = QAMModulator(self.config.modulation)
+        
+        # Modulate bits
+        qam_symbols = qam_modulator.bits_to_symbols(bits)
+        print(f"  Data bits: {len(bits):,}")
+        print(f"  QAM symbols: {len(qam_symbols):,}")
+        
+        # Calculate capacity and padding
+        bits_per_symbol = int(np.log2(len(qam_modulator.constellation)))
+        num_data_subcarriers = len(resource_mapper.get_data_indices())
+        bits_per_ofdm = num_data_subcarriers * bits_per_symbol
+        num_ofdm_symbols = int(np.ceil(len(bits) / bits_per_ofdm))
+        
+        print(f"  Bits per OFDM symbol: {bits_per_ofdm}")
+        print(f"  Number of OFDM symbols: {num_ofdm_symbols}")
+        
+        # Pad bits if needed
+        total_bits_needed = num_ofdm_symbols * bits_per_ofdm
+        if len(bits) < total_bits_needed:
+            bits_padded = np.concatenate([bits, np.zeros(total_bits_needed - len(bits), dtype=int)])
+            qam_symbols = qam_modulator.bits_to_symbols(bits_padded)
+        
+        # Generate channel matrix
+        channel_matrix = (np.random.randn(num_rx, num_tx) + 
+                         1j * np.random.randn(num_rx, num_tx)) / np.sqrt(2)
+        
+        print(f"  Channel matrix shape: {channel_matrix.shape}")
+        
+        # Initialize arrays
+        all_tx_signals = [[] for _ in range(num_tx)]
+        all_rx_signals = []
+        beamforming_gains = []
+        pmi_history = []
+        
+        # Process OFDM symbols
+        symbol_start_idx = 0
+        for ofdm_idx in range(num_ofdm_symbols):
+            # Get data symbols for this OFDM symbol
+            symbol_end_idx = symbol_start_idx + num_data_subcarriers
+            data_symbols = qam_symbols[symbol_start_idx:symbol_end_idx]
+            
+            # CSI Feedback: RX calcula PMI
+            feedback = csi_feedback.generate_feedback(channel_matrix, noise_variance=1.0)
+            pmi = feedback['pmi']
+            W_precoder = feedback['precoder']
+            pmi_history.append(pmi)
+            
+            # Apply beamforming precoding
+            if update_mode == 'adaptive':
+                # Adaptive: actualiza según coherence time
+                precoder.update_precoder(channel_matrix, method='MRT')
+                W_precoder = precoder.get_current_precoder()
+            
+            # Precoding: tx_signals = W @ data_symbols
+            tx_signals_precoded = precoder.apply_precoding(data_symbols, W_precoder)
+            
+            # Calculate beamforming gain
+            bf_gain = precoder.calculate_beamforming_gain(channel_matrix)
+            beamforming_gains.append(bf_gain)
+            
+            # Store TX signals
+            for tx_idx in range(num_tx):
+                all_tx_signals[tx_idx].append(tx_signals_precoded[tx_idx, :])
+            
+            # Transmit through channel: rx = H @ tx + noise
+            # rx_signal shape: [num_rx, num_data_subcarriers]
+            rx_signal = np.zeros((num_rx, num_data_subcarriers), dtype=complex)
+            for rx_idx in range(num_rx):
+                for tx_idx in range(num_tx):
+                    rx_signal[rx_idx, :] += channel_matrix[rx_idx, tx_idx] * tx_signals_precoded[tx_idx, :]
+            
+            # Add noise per RX antenna
+            noise_variance = 10 ** (-snr_db / 10)
+            noise = (np.random.randn(num_rx, num_data_subcarriers) + 
+                    1j * np.random.randn(num_rx, num_data_subcarriers)) * np.sqrt(noise_variance / 2)
+            rx_signal_noisy = rx_signal + noise
+            
+            all_rx_signals.append(rx_signal_noisy)
+            
+            symbol_start_idx = symbol_end_idx
+        
+        # Concatenate all RX signals: [num_ofdm_symbols, num_rx, num_data_subcarriers]
+        rx_symbols_all = np.array(all_rx_signals)  # Shape: [num_ofdm, num_rx, num_data]
+        
+        # Equalization con MRC (Maximum Ratio Combining) para múltiples RX
+        # H_eff = H @ W: [num_rx, num_tx] @ [num_tx, 1] = [num_rx, 1]
+        H_eff = channel_matrix @ W_precoder  # [num_rx, 1]
+        
+        # MRC: combinar señales RX ponderadas por canal conjugado
+        # s_est = (H^H @ y) / (H^H @ H) para cada subcarrier
+        rx_symbols_equalized = []
+        for ofdm_idx in range(num_ofdm_symbols):
+            rx_per_ofdm = rx_symbols_all[ofdm_idx]  # [num_rx, num_data]
+            
+            # MRC combining: suma ponderada por H_eff conjugado
+            combined = np.zeros(num_data_subcarriers, dtype=complex)
+            for rx_idx in range(num_rx):
+                combined += np.conj(H_eff[rx_idx, 0]) * rx_per_ofdm[rx_idx, :]
+            
+            # Normalización por potencia del canal
+            power_norm = np.sum(np.abs(H_eff)**2)
+            combined = combined / power_norm
+            
+            rx_symbols_equalized.append(combined)
+        
+        rx_symbols_equalized = np.concatenate(rx_symbols_equalized)
+        
+        # Demodulate
+        bits_rx = qam_modulator.symbols_to_bits(rx_symbols_equalized)
+        
+        # Trim to original length
+        bits_rx = bits_rx[:original_num_bits]
+        bits_tx = bits[:original_num_bits]
+        
+        # Calculate BER
+        bit_errors = np.sum(bits_tx != bits_rx)
+        ber = bit_errors / original_num_bits
+        
+        # Statistics
+        avg_bf_gain = np.mean(beamforming_gains)
+        unique_pmis = len(set(pmi_history))
+        
+        print(f"\n{'='*70}")
+        print(f"[BEAMFORMING] Results")
+        print(f"{'='*70}")
+        print(f"  BER: {ber:.4e}")
+        print(f"  Bit errors: {bit_errors:,} / {original_num_bits:,}")
+        print(f"  Avg Beamforming Gain: {avg_bf_gain:.2f} dB")
+        print(f"  PMIs used: {unique_pmis} / {csi_feedback.codebook.codebook_size}")
+        print(f"{'='*70}\n")
+        
+        # Results
+        results = {
+            'transmitted_bits': int(original_num_bits),
+            'received_bits': int(original_num_bits),
+            'bits_received_array': bits_rx,
+            'bit_errors': int(bit_errors),
+            'errors': int(bit_errors),
+            'ber': float(ber),
+            'snr_db': float(snr_db),
+            'num_tx': num_tx,
+            'num_rx': num_rx,
+            'mode': 'Beamforming',
+            'codebook_type': codebook_type,
+            'beamforming_gain_db': float(avg_bf_gain),
+            'channel_matrix': channel_matrix,
+            'pmi_history': pmi_history,
+            'unique_pmis': unique_pmis,
+            'velocity_kmh': velocity_kmh,
+        }
+        
+        self.last_results = results
+        return results
+    
     def get_config(self) -> LTEConfig:
         """Get simulator configuration"""
         return self.config

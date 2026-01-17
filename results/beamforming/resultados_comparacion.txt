@@ -1,0 +1,153 @@
+RESULTADOS TEST BEAMFORMING - COMPARACIÓN MÚLTIPLE
+================================================================================
+
+CONFIGURACIÓN
+  Imagen: img/entre-ciel-et-terre.jpg
+  Dimensiones: 450×450
+  Bits: 4,860,000
+  Modulación: 64-QAM
+  Bandwidth: 10 MHz
+  SNR: 15 dB
+  Velocidad: 3 km/h
+
+CONFIGURACIONES PROBADAS
+--------------------------------------------------------------------------------
+
+================================================================================
+1 RX ANTENNA(S)
+================================================================================
+
+2×1 TX Diversity (SFBC) (2×1):
+  BER: 6.4260e-02
+  Errores: 312,305 / 4,860,000
+  PSNR: 17.18 dB
+
+2×1 Beamforming (2×1):
+  BER: 3.4264e-02
+  Errores: 166,524 / 4,860,000
+  PSNR: 20.13 dB
+  Array Gain: 3.01 dB
+
+4×1 Beamforming (4×1):
+  BER: 1.0029e-02
+  Errores: 48,742 / 4,860,000
+  PSNR: 25.54 dB
+  Array Gain: 6.02 dB
+
+8×1 Beamforming (8×1):
+  BER: 1.8823e-03
+  Errores: 9,148 / 4,860,000
+  PSNR: 32.67 dB
+  Array Gain: 9.03 dB
+
+================================================================================
+2 RX ANTENNA(S)
+================================================================================
+
+2×2 TX Diversity (SFBC) (2×2):
+  BER: 6.4260e-02
+  Errores: 312,305 / 4,860,000
+  PSNR: 17.18 dB
+
+2×2 Beamforming (2×2):
+  BER: 1.8749e-02
+  Errores: 91,118 / 4,860,000
+  PSNR: 22.76 dB
+  Array Gain: 1.15 dB
+
+4×2 Beamforming (4×2):
+  BER: 1.0751e-03
+  Errores: 5,225 / 4,860,000
+  PSNR: 35.47 dB
+  Array Gain: 5.12 dB
+
+8×2 Beamforming (8×2):
+  BER: 9.4650e-06
+  Errores: 46 / 4,860,000
+  PSNR: 57.66 dB
+  Array Gain: 7.70 dB
+
+================================================================================
+4 RX ANTENNA(S)
+================================================================================
+
+2×4 TX Diversity (SFBC) (2×4):
+  BER: 6.4260e-02
+  Errores: 312,305 / 4,860,000
+  PSNR: 17.18 dB
+
+2×4 Beamforming (2×4):
+  BER: 3.7755e-03
+  Errores: 18,349 / 4,860,000
+  PSNR: 29.70 dB
+  Array Gain: 1.54 dB
+
+4×4 Beamforming (4×4):
+  BER: 1.7984e-04
+  Errores: 874 / 4,860,000
+  PSNR: 41.88 dB
+  Array Gain: 2.78 dB
+
+8×4 Beamforming (8×4):
+  BER: 9.2798e-05
+  Errores: 451 / 4,860,000
+  PSNR: 45.91 dB
+  Array Gain: 2.60 dB
+
+================================================================================
+MEJORAS RESPECTO A TX DIVERSITY (baseline de cada fila)
+================================================================================
+
+1 RX - Baseline: 2×1 TX Diversity (SFBC)
+--------------------------------------------------------------------------------
+
+2×1 Beamforming:
+  BER mejora: 1.88× (2.73 dB)
+  PSNR mejora: +2.95 dB
+  Array gain: 3.01 dB
+
+4×1 Beamforming:
+  BER mejora: 6.41× (8.07 dB)
+  PSNR mejora: +8.36 dB
+  Array gain: 6.02 dB
+
+8×1 Beamforming:
+  BER mejora: 34.14× (15.33 dB)
+  PSNR mejora: +15.49 dB
+  Array gain: 9.03 dB
+
+2 RX - Baseline: 2×2 TX Diversity (SFBC)
+--------------------------------------------------------------------------------
+
+2×2 Beamforming:
+  BER mejora: 3.43× (5.35 dB)
+  PSNR mejora: +5.58 dB
+  Array gain: 1.15 dB
+
+4×2 Beamforming:
+  BER mejora: 59.77× (17.76 dB)
+  PSNR mejora: +18.30 dB
+  Array gain: 5.12 dB
+
+8×2 Beamforming:
+  BER mejora: 6789.24× (38.32 dB)
+  PSNR mejora: +40.48 dB
+  Array gain: 7.70 dB
+
+4 RX - Baseline: 2×4 TX Diversity (SFBC)
+--------------------------------------------------------------------------------
+
+2×4 Beamforming:
+  BER mejora: 17.02× (12.31 dB)
+  PSNR mejora: +12.52 dB
+  Array gain: 1.54 dB
+
+4×4 Beamforming:
+  BER mejora: 357.33× (25.53 dB)
+  PSNR mejora: +24.70 dB
+  Array gain: 2.78 dB
+
+8×4 Beamforming:
+  BER mejora: 692.47× (28.40 dB)
+  PSNR mejora: +28.73 dB
+  Array gain: 2.60 dB

@@ -266,3 +266,60 @@ class SFBCResourceMapper:
     def extract_data_from_grid(self, rx_grid: np.ndarray) -> np.ndarray:
         """Extract data subcarriers from received OFDM grid"""
         return rx_grid[self.data_indices]
+    
+    def apply_generic_precoding(self, symbols: np.ndarray, W_matrix: np.ndarray) -> List[np.ndarray]:
+        """
+        Método genérico para aplicar cualquier precoder W.
+        Usado para beamforming, spatial multiplexing, etc.
+        
+        Este método NO interfiere con el SFBC Alamouti original.
+        Es un método adicional para esquemas de precoding genéricos.
+        
+        Parameters:
+        -----------
+        symbols : np.ndarray
+            Símbolos QAM de entrada, shape (num_data,) o (num_layers, num_data)
+        W_matrix : np.ndarray
+            Matriz de precoding, shape (num_tx, num_layers)
+            donde num_tx es el número de antenas TX
+        
+        Returns:
+        --------
+        list : Lista de arrays, uno por antena TX
+            Cada elemento tiene shape (num_data,)
+        
+        Example:
+        --------
+        Para beamforming con 4 TX antennas:
+            W = [[w0], [w1], [w2], [w3]]  # shape (4, 1)
+            symbols = [s0, s1, s2, ...]    # shape (N,)
+            tx_signals = apply_generic_precoding(symbols, W)
+            # tx_signals[0] = w0 * symbols
+            # tx_signals[1] = w1 * symbols
+            # etc.
+        """
+        # Asegurar que symbols es 2D: (num_layers, num_data)
+        if symbols.ndim == 1:
+            symbols = symbols.reshape(1, -1)
+        
+        num_layers, num_data = symbols.shape
+        num_tx = W_matrix.shape[0]
+        
+        # Verificar dimensiones
+        if W_matrix.shape[1] != num_layers:
+            raise ValueError(
+                f"W_matrix shape {W_matrix.shape} no compatible con "
+                f"{num_layers} layers"
+            )
+        
+        # Aplicar precoding: tx_signals = W @ symbols
+        # tx_signals[i] = sum_l(W[i, l] * symbols[l, :])
+        tx_signals = []
+        for tx_idx in range(num_tx):
+            # Señal para antena tx_idx
+            tx_signal = np.zeros(num_data, dtype=complex)
+            for layer_idx in range(num_layers):
+                tx_signal += W_matrix[tx_idx, layer_idx] * symbols[layer_idx, :]
+            tx_signals.append(tx_signal)
+        
+        return tx_signals
