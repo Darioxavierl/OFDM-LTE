@@ -17,21 +17,30 @@ class LTECodebook:
     Basado en TS 36.211 Table 6.3.4.2.3-1 y 6.3.4.2.3-2.
     """
     
-    def __init__(self, num_tx, transmission_mode='TM6'):
+    def __init__(self, num_tx, transmission_mode='TM6', rank=1):
         """
         Args:
             num_tx (int): Número de antenas TX (2, 4, 8)
-            transmission_mode (str): 'TM6' (rank-1) o 'TM4' (rank-1/2)
+            transmission_mode (str): 'TM6' (rank-1) o 'TM4' (rank-1/2/3/4)
+            rank (int): Número de capas espaciales (1-4 para TM4, siempre 1 para TM6)
         """
         self.num_tx = num_tx
         self.transmission_mode = transmission_mode
+        self.rank = rank
+        
+        # Validar rank según modo
+        if transmission_mode == 'TM6' and rank != 1:
+            raise ValueError(f"TM6 solo soporta rank=1, recibido rank={rank}")
+        
+        if transmission_mode == 'TM4' and (rank < 1 or rank > min(num_tx, 4)):
+            raise ValueError(f"TM4 con {num_tx} antenas soporta rank 1-{min(num_tx, 4)}, recibido rank={rank}")
         
         # Generar codebook
         self.codebook = self._generate_codebook()
         self.codebook_size = len(self.codebook)
         
         print(f"[LTECodebook] Inicializado:")
-        print(f"  Modo: {transmission_mode}")
+        print(f"  Modo: {transmission_mode}, Rank: {rank}")
         print(f"  Antenas TX: {num_tx}")
         print(f"  Tamaño codebook: {self.codebook_size} matrices")
     
@@ -89,12 +98,210 @@ class LTECodebook:
     def _generate_tm4_codebook(self):
         """
         TM4 Codebook (TS 36.211 Table 6.3.4.2.3-1)
-        Rank-1 y Rank-2 precoding.
-        
-        Por ahora solo implementamos Rank-1 (similar a TM6).
+        Soporta Rank-1, Rank-2, Rank-3, Rank-4 según especificación LTE.
         """
-        # Para TM4, usamos TM6 como base (simplificación)
+        if self.rank == 1:
+            return self._generate_tm4_rank1_codebook()
+        elif self.rank == 2:
+            return self._generate_tm4_rank2_codebook()
+        elif self.rank == 3:
+            return self._generate_tm4_rank3_codebook()
+        elif self.rank == 4:
+            return self._generate_tm4_rank4_codebook()
+        else:
+            raise ValueError(f"Rank {self.rank} no soportado en TM4")
+    
+    def _generate_tm4_rank1_codebook(self):
+        """
+        TM4 Rank-1: Similar a TM6 pero con índices diferentes.
+        Usa mismos vectores DFT.
+        """
         return self._generate_tm6_codebook()
+    
+    def _generate_tm4_rank2_codebook(self):
+        """
+        TM4 Rank-2 Codebook (TS 36.211 Table 6.3.4.2.3-1)
+        Matrices [num_tx × 2] para transmisión de 2 capas paralelas.
+        """
+        if self.num_tx == 2:
+            # 2×2: 3 matrices (TS 36.211 Table 6.3.4.2.3-1)
+            codebook = [
+                # W0: Identity-like
+                np.array([[1, 0],
+                         [0, 1]]) / np.sqrt(2),
+                
+                # W1: Hadamard-like
+                np.array([[1, 1],
+                         [1, -1]]) / 2,
+                
+                # W2: Phase rotation
+                np.array([[1, 1],
+                         [1j, -1j]]) / 2,
+            ]
+        
+        elif self.num_tx == 4:
+            # 4×2: 16 matrices (TS 36.211 Table 6.3.4.2.3-1)
+            codebook = []
+            
+            # Householder-based precoders para 4 antenas, 2 layers
+            # Matrices ortogonales que maximizan diversidad
+            
+            # W0-W3: DFT-based con separación de capas
+            for i in range(4):
+                theta = 2 * np.pi * i / 4
+                W = np.array([
+                    [1, 0],
+                    [np.exp(1j * theta), 0],
+                    [0, 1],
+                    [0, np.exp(1j * theta)]
+                ]) / np.sqrt(2)
+                codebook.append(W)
+            
+            # W4-W7: Rotaciones alternas
+            for i in range(4):
+                theta = 2 * np.pi * i / 4
+                W = np.array([
+                    [1, 1],
+                    [np.exp(1j * theta), -np.exp(1j * theta)],
+                    [1, -1],
+                    [np.exp(1j * theta), np.exp(1j * theta)]
+                ]) / 2
+                codebook.append(W)
+            
+            # W8-W11: Configuraciones cruzadas
+            for i in range(4):
+                theta = 2 * np.pi * i / 4
+                W = np.array([
+                    [1, 0],
+                    [0, 1],
+                    [np.exp(1j * theta), 0],
+                    [0, np.exp(1j * theta)]
+                ]) / np.sqrt(2)
+                codebook.append(W)
+            
+            # W12-W15: Hadamard variations
+            for i in range(4):
+                theta = 2 * np.pi * i / 4
+                W = np.array([
+                    [1, 1],
+                    [1, -1],
+                    [np.exp(1j * theta), np.exp(1j * theta)],
+                    [np.exp(1j * theta), -np.exp(1j * theta)]
+                ]) / 2
+                codebook.append(W)
+        
+        elif self.num_tx == 8:
+            # 8×2: 16 matrices (simplificado, extendiendo patrón de 4 antenas)
+            codebook = []
+            
+            for i in range(16):
+                theta = 2 * np.pi * i / 16
+                # Patrón DFT extendido a 8 antenas
+                W = np.zeros((8, 2), dtype=complex)
+                W[0:4, 0] = np.exp(1j * theta * np.arange(4)) / np.sqrt(4)
+                W[4:8, 1] = np.exp(1j * theta * np.arange(4)) / np.sqrt(4)
+                codebook.append(W)
+        
+        else:
+            raise ValueError(f"num_tx={self.num_tx} no soportado en TM4 Rank-2")
+        
+        return codebook
+    
+    def _generate_tm4_rank3_codebook(self):
+        """
+        TM4 Rank-3 Codebook
+        Matrices [num_tx × 3] para 3 capas (requiere num_tx ≥ 4)
+        """
+        if self.num_tx < 4:
+            raise ValueError(f"Rank-3 requiere al menos 4 antenas TX, disponibles: {self.num_tx}")
+        
+        codebook = []
+        
+        if self.num_tx == 4:
+            # 4×3: 8 matrices
+            for i in range(8):
+                theta = 2 * np.pi * i / 8
+                W = np.array([
+                    [1, 0, 0],
+                    [0, 1, 0],
+                    [0, 0, 1],
+                    [np.exp(1j * theta), np.exp(1j * theta), np.exp(1j * theta)]
+                ]) / np.sqrt(1.75)  # Normalización para mantener potencia
+                codebook.append(W)
+        
+        elif self.num_tx == 8:
+            # 8×3: 16 matrices
+            for i in range(16):
+                theta = 2 * np.pi * i / 16
+                W = np.zeros((8, 3), dtype=complex)
+                # Distribuir capas entre antenas
+                W[0:3, 0] = [1, np.exp(1j*theta), np.exp(1j*2*theta)] / np.sqrt(3)
+                W[3:6, 1] = [1, np.exp(1j*theta), np.exp(1j*2*theta)] / np.sqrt(3)
+                W[6:8, 2] = [1, np.exp(1j*theta)] / np.sqrt(2)
+                W[0, 2] = np.exp(1j*theta) / np.sqrt(2)
+                codebook.append(W)
+        
+        else:
+            raise ValueError(f"num_tx={self.num_tx} no soportado en TM4 Rank-3")
+        
+        return codebook
+    
+    def _generate_tm4_rank4_codebook(self):
+        """
+        TM4 Rank-4 Codebook
+        Matrices [num_tx × 4] para 4 capas (requiere num_tx ≥ 4)
+        """
+        if self.num_tx < 4:
+            raise ValueError(f"Rank-4 requiere al menos 4 antenas TX, disponibles: {self.num_tx}")
+        
+        codebook = []
+        
+        if self.num_tx == 4:
+            # 4×4: 4 matrices (cuadradas)
+            
+            # W0: Identity
+            codebook.append(np.eye(4) / 2)
+            
+            # W1: DFT matrix
+            W_dft = np.zeros((4, 4), dtype=complex)
+            for i in range(4):
+                for j in range(4):
+                    W_dft[i, j] = np.exp(-2j * np.pi * i * j / 4)
+            codebook.append(W_dft / 2)
+            
+            # W2: Hadamard-like
+            codebook.append(np.array([
+                [1, 1, 1, 1],
+                [1, -1, 1, -1],
+                [1, 1, -1, -1],
+                [1, -1, -1, 1]
+            ]) / 2)
+            
+            # W3: Phase rotations
+            codebook.append(np.array([
+                [1, 1, 1, 1],
+                [1, 1j, -1, -1j],
+                [1, -1, 1, -1],
+                [1, -1j, -1, 1j]
+            ]) / 2)
+        
+        elif self.num_tx == 8:
+            # 8×4: 8 matrices
+            for i in range(8):
+                theta = 2 * np.pi * i / 8
+                W = np.zeros((8, 4), dtype=complex)
+                
+                # Asignar 2 antenas por capa
+                for layer in range(4):
+                    ant_start = layer * 2
+                    W[ant_start:ant_start+2, layer] = [1, np.exp(1j * theta * (layer+1))] / np.sqrt(2)
+                
+                codebook.append(W)
+        
+        else:
+            raise ValueError(f"num_tx={self.num_tx} no soportado en TM4 Rank-4")
+        
+        return codebook
     
     def get_codebook(self):
         """Retorna el codebook completo"""

@@ -1,0 +1,285 @@
+def simulate_spatial_multiplexing(
+    bits,
+    num_tx=4,
+    num_rx=2,
+    rank='adaptive',
+    detector_type='MMSE',
+    modulation='64-QAM',
+    snr_db=15,
+    config=None,
+    channel_type='awgn',
+    itu_profile='Pedestrian_A',
+    velocity_kmh=3,
+    frequency_ghz=2.0,
+    enable_csi_feedback=True,
+    coherence_time_symbols=None,
+    enable_parallel=False,
+    codebook_type='TM4'
+):
+    """
+    Simula transmisión con Spatial Multiplexing (TM4) - VERSIÓN CORREGIDA
+    
+    Sigue el mismo patrón que simulate_mimo() usando:
+    - ResourceMapper para crear grids OFDM con CRS
+    - transmit_spatial_multiplexing() para canal MIMO
+    - Perfect CSI (matriz H real) para detección
+    
+    Args:
+        bits: Array de bits a transmitir
+        num_tx: Número de antenas TX (2, 4, 8)
+        num_rx: Número de antenas RX (>= rank)
+        rank: Número de capas espaciales o 'adaptive'
+        detector_type: 'MMSE', 'ZF', 'SIC', 'MRC'
+        modulation: '64-QAM', '16-QAM', 'QPSK'
+        snr_db: SNR en dB
+        config: LTEConfig object
+        channel_type: 'awgn' o 'rayleigh_mp'
+        enable_csi_feedback: Si True, calcula RI/PMI óptimos
+    
+    Returns:
+        dict con BER, bits recibidos, matriz H, etc.
+    """
+    from core.layer_mapper import LayerMapper
+    from core.rank_adaptation import RankAdaptation
+    from core.mimo_detector import MIMODetector
+    from core.codebook_lte import LTECodebook
+    from core.modulator import QAMModulator
+    from core.resource_mapper import ResourceMapper
+    
+    print(f"\n{'='*70}")
+    print(f"[SPATIAL MULTIPLEXING] TM4 Simulation")
+    print(f"{'='*70}")
+    print(f"  Config: {num_tx}x{num_rx} MIMO, Rank: {rank}, Detector: {detector_type}")
+    print(f"  Modulation: {modulation}, SNR: {snr_db} dB")
+    print(f"{'='*70}\n")
+    
+    # Configuración
+    if config is None:
+        from config import LTEConfig
+        config = LTEConfig(modulation=modulation)
+    
+    original_num_bits = len(bits)
+    
+    # Componentes
+    qam_modulator = QAMModulator(modulation)
+    resource_mapper = ResourceMapper(config)
+    data_indices = resource_mapper.get_data_indices()
+    
+    # Calcular capacidad
+    bits_per_symbol = int(np.log2(len(qam_modulator.constellation)))
+    num_data_subcarriers = len(data_indices)
+    bits_per_ofdm = num_data_subcarriers * bits_per_symbol
+    num_ofdm_symbols = int(np.ceil(original_num_bits / bits_per_ofdm))
+    
+    print(f"[1/7] QAM Modulation:")
+    print(f"  Bits per OFDM symbol: {bits_per_ofdm}")
+    print(f"  Number of OFDM symbols: {num_ofdm_symbols}")
+    
+    # Pad bits
+    bits_padded = bits.copy()
+    if len(bits_padded) < num_ofdm_symbols * bits_per_ofdm:
+        bits_padded = np.pad(bits_padded, 
+                            (0, num_ofdm_symbols * bits_per_ofdm - len(bits_padded)), 
+                            'constant')
+    
+    # Generar canal MIMO inicial para rank adaptation
+    H_initial = (np.random.randn(num_rx, num_tx) + 1j * np.random.randn(num_rx, num_tx)) / np.sqrt(2 * num_tx)
+    
+    # Decidir rank y PMI
+    if rank == 'adaptive' and enable_csi_feedback:
+        rank_adapter = RankAdaptation(num_tx, num_rx, snr_db=snr_db)
+        feedback = rank_adapter.get_feedback(H_initial)
+        rank_used = feedback['ri']
+        pmi_used = feedback['pmi']
+        W_precoder = feedback['W']
+        print(f"[2/7] Rank Adaptation: RI={rank_used}, PMI={pmi_used}")
+    else:
+        rank_used = int(rank) if rank != 'adaptive' else min(num_tx, num_rx)
+        codebook = LTECodebook(num_tx, transmission_mode='TM4', rank=rank_used)
+        pmi_used = 0
+        W_precoder = codebook.get_precoder(pmi_used)
+        print(f"[2/7] Fixed Rank: RI={rank_used}, PMI={pmi_used}")
+    
+    # Layer mapper
+    layer_mapper = LayerMapper(num_layers=rank_used)
+    
+    print(f"[3/7] Layer Mapping: {rank_used} spatial layers")
+    
+    # Preparar grids por símbolo OFDM
+    all_grids_tx = [[] for _ in range(num_tx)]
+    all_signals_tx = [[] for _ in range(num_tx)]
+    all_bits_chunks = []
+    
+    for ofdm_idx in range(num_ofdm_symbols):
+        # Extraer bits para este símbolo OFDM
+        start_bit = ofdm_idx * bits_per_ofdm
+        end_bit = (ofdm_idx + 1) * bits_per_ofdm
+        bits_chunk = bits_padded[start_bit:end_bit]
+        all_bits_chunks.append(bits_chunk)
+        
+        # QAM modulation
+        qam_symbols = qam_modulator.bits_to_symbols(bits_chunk)
+        
+        # Layer mapping
+        padded_length = layer_mapper.get_padded_length(len(qam_symbols))
+        if padded_length > len(qam_symbols):
+            qam_symbols = np.concatenate([qam_symbols, np.zeros(padded_length - len(qam_symbols), dtype=complex)])
+        
+        layers = layer_mapper.map_to_layers(qam_symbols)  # [rank_used, symbols_per_layer]
+        
+        # Precoding: x = W @ layers
+        precoded = W_precoder @ layers  # [num_tx, symbols_per_layer]
+        
+        # Mapear a grids OFDM por cada antena TX
+        for tx_idx in range(num_tx):
+            tx_symbols = precoded[tx_idx, :]
+            grid_tx = resource_mapper.map_to_grid(tx_symbols)
+            all_grids_tx[tx_idx].append(grid_tx)
+            
+            # IFFT + CP
+            time_tx = np.fft.ifft(grid_tx) * np.sqrt(config.N)
+            signal_tx = np.concatenate([time_tx[-config.cp_length:], time_tx])
+            all_signals_tx[tx_idx].append(signal_tx)
+    
+    print(f"[4/7] Precoding: W[{num_tx}x{rank_used}] applied to {num_ofdm_symbols} OFDM symbols")
+    
+    # Concatenar señales TX de todos los símbolos
+    signals_tx_full = [np.concatenate(all_signals_tx[tx_idx]) for tx_idx in range(num_tx)]
+    
+    # Transmitir a través de canal MIMO con Spatial Multiplexing
+    print(f"[5/7] Transmitting through MIMO channel (SNR={snr_db} dB)...")
+    
+    # Configurar canal
+    from core.channel import ChannelSimulator
+    if not hasattr(self, 'channels') or len(self.channels) == 0:
+        fs = config.fs if hasattr(config, 'fs') else 15.36e6
+        channel_sim = ChannelSimulator(
+            channel_type=channel_type,
+            snr_db=snr_db,
+            fs=fs,
+            itu_profile=itu_profile,
+            frequency_ghz=frequency_ghz,
+            velocity_kmh=velocity_kmh,
+            verbose=False
+        )
+    else:
+        channel_sim = self.channels[0]
+        channel_sim.set_snr(snr_db)
+    
+    # Transmitir con spatial multiplexing
+    signals_rx, H_channel = channel_sim.transmit_spatial_multiplexing(signals_tx_full, num_rx=num_rx)
+    
+    print(f"  Channel matrix H shape: {H_channel.shape}")
+    print(f"  H matrix norm: {np.linalg.norm(H_channel):.3f}")
+    
+    # Demodular cada RX antenna
+    print(f"[6/7] Demodulating {num_rx} RX antennas...")
+    
+    all_grids_rx_per_antenna = []
+    
+    for rx_idx in range(num_rx):
+        signal_rx = signals_rx[rx_idx]
+        
+        # Demodular OFDM symbols
+        grids_rx = []
+        signal_ptr = 0
+        symbol_length = config.N + config.cp_length
+        
+        for _ in range(num_ofdm_symbols):
+            if signal_ptr + symbol_length <= len(signal_rx):
+                ofdm_symbol = signal_rx[signal_ptr:signal_ptr + symbol_length]
+                
+                # Remove CP
+                ofdm_no_cp = ofdm_symbol[config.cp_length:]
+                
+                # FFT
+                freq_symbol = np.fft.fft(ofdm_no_cp) / np.sqrt(config.N)
+                grids_rx.append(freq_symbol)
+                
+                signal_ptr += symbol_length
+        
+        all_grids_rx_per_antenna.append(grids_rx)
+    
+    # MIMO Detection con Perfect CSI (matriz H real)
+    print(f"[7/7] MIMO Detection ({detector_type}) with Perfect CSI...")
+    
+    mimo_detector = MIMODetector(
+        num_rx=num_rx,
+        num_layers=rank_used,
+        detector_type=detector_type,
+        constellation=qam_modulator.get_constellation()
+    )
+    
+    # Calcular H efectiva: H_eff = H @ W
+    H_eff = H_channel @ W_precoder  # [num_rx, rank_used]
+    noise_variance = 10 ** (-snr_db / 10)
+    
+    # Decodificar cada símbolo OFDM
+    all_bits_rx = []
+    total_bit_errors = 0
+    
+    for ofdm_idx in range(min(num_ofdm_symbols, len(all_grids_rx_per_antenna[0]))):
+        bits_chunk = all_bits_chunks[ofdm_idx]
+        
+        # Extraer símbolos de datos de cada RX
+        y_received = np.zeros((num_rx, num_data_subcarriers), dtype=complex)
+        for rx_idx in range(num_rx):
+            grid_rx = all_grids_rx_per_antenna[rx_idx][ofdm_idx]
+            y_received[rx_idx, :] = grid_rx[data_indices]
+        
+        # MIMO detection
+        layers_rx = mimo_detector.detect(
+            y_received=y_received,
+            H_channel=H_eff,
+            noise_variance=noise_variance,
+            W_precoder=None  # Ya aplicado en H_eff
+        )
+        
+        # Layer demapping
+        symbols_rx = layer_mapper.demap_from_layers(layers_rx, original_length=num_data_subcarriers)
+        
+        # QAM demodulation
+        bits_rx_chunk = qam_modulator.symbols_to_bits(symbols_rx[:num_data_subcarriers])
+        all_bits_rx.append(bits_rx_chunk[:bits_per_ofdm])
+        
+        # Calculate errors
+        total_bit_errors += np.sum(bits_chunk[:bits_per_ofdm] != bits_rx_chunk[:bits_per_ofdm])
+    
+    # Concatenar bits recibidos
+    bits_rx = np.concatenate(all_bits_rx)[:original_num_bits]
+    
+    # BER final
+    bit_errors = np.sum(bits[:original_num_bits] != bits_rx)
+    ber = bit_errors / original_num_bits if original_num_bits > 0 else 0
+    
+    print(f"\n{'='*70}")
+    print(f"  RESULTS:")
+    print(f"{'='*70}")
+    print(f"  BER: {ber:.4e}")
+    print(f"  Bit errors: {bit_errors}/{original_num_bits}")
+    print(f"  Rank used: {rank_used}")
+    print(f"  Detector: {detector_type}")
+    print(f"{'='*70}\n")
+    
+    results = {
+        'transmitted_bits': int(original_num_bits),
+        'received_bits': int(original_num_bits),
+        'bits_received_array': bits_rx,
+        'bit_errors': int(bit_errors),
+        'errors': int(bit_errors),
+        'ber': float(ber),
+        'snr_db': float(snr_db),
+        'num_tx': num_tx,
+        'num_rx': num_rx,
+        'rank': rank_used,
+        'detector_type': detector_type,
+        'mode': 'Spatial Multiplexing TM4',
+        'codebook_type': codebook_type,
+        'channel_matrix': H_channel,
+        'precoder_matrix': W_precoder,
+        'pmi_used': pmi_used,
+        'velocity_kmh': velocity_kmh,
+        'modulation': modulation,
+    }
+    
+    return results

@@ -151,7 +151,8 @@ class RayleighMultiPathChannel:
             print(f"  - Retardos: {[f'{d*1e6:.2f}µs' for d in delays]}")
             print(f"  - Ganancias: {[f'{g:.1f}dB' for g in gains]}")
             print(f"  - Doppler máximo: {fD:.1f} Hz")
-            print(f"  - SNR: {snr_db} dB")
+            # Nota: SNR del canal no se usa, el SNR real se pasa en simulate_*()
+            # print(f"  - SNR: {snr_db} dB")
             if frequency_ghz is not None:
                 print(f"  - Frecuencia: {frequency_ghz:.2f} GHz")
             if velocity_kmh is not None:
@@ -392,3 +393,61 @@ class ChannelSimulator:
                 'type': self.channel_type,
                 'SNR_dB': self.channel.snr_db if hasattr(self.channel, 'snr_db') else None
             }
+    
+    def transmit_spatial_multiplexing(self, tx_signals, num_rx=2):
+        """
+        Transmite señales MIMO con Spatial Multiplexing (diferentes datos por antena TX)
+        
+        Diferente de transmit_mimo() que es para DIVERSIDAD (Alamouti/SFBC).
+        Aquí cada TX antenna transmite DIFERENTES datos.
+        
+        Args:
+            tx_signals: Lista de señales TX [signal_tx0, signal_tx1, ..., signal_tx_N]
+            num_rx: Número de antenas RX
+        
+        Returns:
+            tuple: (signals_rx, H_channel)
+                - signals_rx: Lista de señales recibidas [signal_rx0, ..., signal_rx_M]
+                - H_channel: Matriz de canal [num_rx, num_tx] con H[i,j] = canal TX_j -> RX_i
+        """
+        num_tx = len(tx_signals)
+        
+        # Asegurar que todas las señales TX tengan la misma longitud
+        signal_length = min(len(sig) for sig in tx_signals)
+        tx_signals_aligned = [sig[:signal_length] for sig in tx_signals]
+        
+        # Generar matriz de canal MIMO H[num_rx, num_tx]
+        # Cada elemento H[i,j] es el canal de TX_j a RX_i
+        H_channel = np.zeros((num_rx, num_tx), dtype=complex)
+        
+        # Inicializar señales RX
+        signals_rx = []
+        
+        for rx_idx in range(num_rx):
+            # Señal recibida en esta antena RX es la suma de todas las TX
+            rx_signal = np.zeros(signal_length, dtype=complex)
+            
+            for tx_idx in range(num_tx):
+                # Generar coeficiente de canal h[rx_idx, tx_idx]
+                # Rayleigh fading: h ~ CN(0, 1)
+                h_real = np.random.normal(0, 1/np.sqrt(2))
+                h_imag = np.random.normal(0, 1/np.sqrt(2))
+                h = (h_real + 1j * h_imag) / np.sqrt(num_tx)  # Normalizado por número de TX
+                
+                H_channel[rx_idx, tx_idx] = h
+                
+                # Aplicar canal: y = h * x
+                rx_signal += h * tx_signals_aligned[tx_idx]
+            
+            # Añadir ruido AWGN a esta antena RX
+            signal_power = np.mean(np.abs(rx_signal) ** 2)
+            noise_power = signal_power / self.channel.snr_linear
+            
+            noise_real = np.random.normal(0, np.sqrt(noise_power / 2), signal_length)
+            noise_imag = np.random.normal(0, np.sqrt(noise_power / 2), signal_length)
+            noise = noise_real + 1j * noise_imag
+            
+            rx_signal_noisy = rx_signal + noise
+            signals_rx.append(rx_signal_noisy)
+        
+        return signals_rx, H_channel
