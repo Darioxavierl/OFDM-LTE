@@ -837,11 +837,30 @@ class OFDMSimulator:
         - Numerator: sum of conj(H_i) * Y_i (co-phased and weighted)
         - Denominator: sum of |H_i|² (total received power)
         - No division by num_rx needed - weights are optimal
+        - CRITICAL FIX: Validate and pad all symbol arrays to same length
         """
         from core.resource_mapper import LTEResourceGrid
         
         num_rx = len(symbols_rx_list)
-        num_total_data_symbols = len(symbols_rx_list[0])
+        
+        # Validate input and get maximum length
+        max_symbols = max(len(s) for s in symbols_rx_list) if symbols_rx_list else 0
+        
+        if max_symbols == 0:
+            raise ValueError("No symbols received from any antenna")
+        
+        # Normalize all symbol arrays to same length (CRITICAL FIX)
+        symbols_rx_list_normalized = []
+        for antenna_idx, symbols in enumerate(symbols_rx_list):
+            if len(symbols) < max_symbols:
+                # Pad with zeros if shorter
+                symbols_padded = np.pad(symbols, (0, max_symbols - len(symbols)), 'constant')
+            else:
+                # Truncate if longer
+                symbols_padded = symbols[:max_symbols]
+            symbols_rx_list_normalized.append(symbols_padded)
+        
+        num_total_data_symbols = max_symbols
         
         # Get data indices for ONE OFDM symbol
         data_indices = LTEResourceGrid(self.config.N, self.config.Nc).get_data_indices()
@@ -861,11 +880,11 @@ class OFDMSimulator:
         
         # MRC combining: process each RX antenna
         for antenna_idx in range(num_rx):
-            Y_antenna = symbols_rx_list[antenna_idx]  # All data symbols from this antenna
+            Y_antenna = symbols_rx_list_normalized[antenna_idx]  # Normalized symbols from this antenna
             H_list = h_estimates_per_antenna[antenna_idx]  # Channel estimates per OFDM symbol
             
             # Process each OFDM symbol and its data
-            data_idx = 0  # Index into symbols_data
+            data_idx = 0  # Index into symbols_data (resets for each antenna, which is correct)
             for sym_idx in range(num_ofdm_symbols):
                 # Get channel estimate for this OFDM symbol and antenna
                 if sym_idx < len(H_list):
@@ -874,8 +893,16 @@ class OFDMSimulator:
                     # Use last available estimate if we run out
                     H_full = H_list[-1] if len(H_list) > 0 else np.ones(self.config.N, dtype=complex)
                 
+                # Ensure H_full has correct length
+                if len(H_full) < self.config.N:
+                    H_full = np.pad(H_full, (0, self.config.N - len(H_full)), 'constant')
+                
                 # Extract channel at data positions for this symbol
                 H_data = H_full[data_indices]
+                
+                # Ensure H_data matches expected length
+                if len(H_data) < num_data_per_symbol:
+                    H_data = np.pad(H_data, (0, num_data_per_symbol - len(H_data)), 'constant')
                 
                 # Number of data symbols in this OFDM symbol (may be less for last symbol)
                 num_data_this_symbol = min(num_data_per_symbol, num_total_data_symbols - data_idx)
@@ -884,7 +911,8 @@ class OFDMSimulator:
                 for local_k in range(num_data_this_symbol):
                     global_k = data_idx + local_k
                     
-                    if global_k < len(Y_antenna):
+                    # Ensure indices are valid
+                    if global_k < len(Y_antenna) and global_k < len(mrc_numerator):
                         y_k = Y_antenna[global_k]
                         h_k = H_data[local_k] if local_k < len(H_data) else 1.0 + 0j
                         
