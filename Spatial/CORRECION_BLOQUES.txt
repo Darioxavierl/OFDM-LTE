@@ -1,0 +1,36 @@
+"""
+CORRECCIÓN APLICADA - Spatial Multiplexing GUI
+================================================
+
+PROBLEMA IDENTIFICADO:
+- La GUI llamaba a simulate_spatial_multiplexing() UNA SOLA VEZ con todos los bits
+- Esto causaba que se usara la MISMA matriz de canal H para TODOS los símbolos OFDM
+- Resultado: BER=24% (horrible), PSNR=10dB (imagen destruida)
+
+SOLUCIÓN IMPLEMENTADA:
+- Ahora la GUI usa el MISMO método que el test: procesar por bloques
+- Divide la imagen en bloques de 1494 bits (249 subportadoras × 6 bits de 64-QAM)
+- Llama a simulate_spatial_multiplexing() para cada bloque con canal independiente
+- Resultado esperado: BER~0.3%, PSNR~30dB (igual que el test)
+
+FUNCIONES MODIFICADAS:
+1. _run_single_simulation() - Línea 54
+   - Ahora procesa en num_ofdm_symbols bloques
+   - Cada bloque tiene su propia realización del canal
+   - Acumula bits recibidos y errores de todos los bloques
+
+2. _run_multiantenna_test() - Línea 340
+   - Similar modificación: procesa por bloques
+   - Para cada configuración (2×2, 4×2, etc.) procesa la imagen completa en bloques
+   - Mucho más lento pero con resultados correctos
+
+DIFERENCIA DE VELOCIDAD:
+- Método incorrecto (GUI anterior): 1 llamada → Rápido pero MALO
+- Método correcto (GUI nueva): ~3254 llamadas → Lento pero CORRECTO
+- Para imagen 450×450: ~20-25 segundos por configuración
+
+PRUEBA:
+Ejecuta el GUI y compara con resultados del test:
+- Test: BER=0.3%, PSNR=30dB
+- GUI (nuevo): Debería dar resultados similares
+"""
