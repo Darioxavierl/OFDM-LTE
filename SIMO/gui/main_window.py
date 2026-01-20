@@ -840,7 +840,9 @@ class OFDMSimulatorGUI(QMainWindow):
         # Graficar constelación
         # Para SISO: usa 'symbols_rx'
         # Para SIMO: usa 'symbols_rx_combined'
-        symbols_rx = results.get('symbols_rx') or results.get('symbols_rx_combined')
+        symbols_rx = results.get('symbols_rx')
+        if symbols_rx is None:
+            symbols_rx = results.get('symbols_rx_combined')
         if 'symbols_tx' in results and symbols_rx is not None:
             self.plot_constellation(results['symbols_tx'], symbols_rx)
         
