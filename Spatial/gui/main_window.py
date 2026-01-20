@@ -245,14 +245,12 @@ class SimulationWorker(QThread):
         # Configuraciones a comparar (TM4 Spatial Multiplexing)
         # Formato: (nombre, num_tx, num_rx, detector_type, estilo_línea)
         configurations = [
-            ('2×2 MMSE', 2, 2, 'MMSE', {'color': '#2196F3', 'linestyle': '-', 'linewidth': 2, 'marker': 'o'}),
+            ('2×2 IRC', 2, 2, 'MMSE', {'color': '#2196F3', 'linestyle': '-', 'linewidth': 2, 'marker': 'o'}),
             ('2×2 SIC', 2, 2, 'SIC', {'color': '#2196F3', 'linestyle': '--', 'linewidth': 2, 'marker': 's'}),
-            ('4×2 MMSE', 4, 2, 'MMSE', {'color': '#4CAF50', 'linestyle': '-', 'linewidth': 2.5, 'marker': 'o'}),
+            ('4×2 IRC', 4, 2, 'MMSE', {'color': '#4CAF50', 'linestyle': '-', 'linewidth': 2.5, 'marker': 'o'}),
             ('4×2 SIC', 4, 2, 'SIC', {'color': '#4CAF50', 'linestyle': '--', 'linewidth': 2.5, 'marker': 's'}),
-            ('4×4 MMSE', 4, 4, 'MMSE', {'color': '#FF9800', 'linestyle': '-', 'linewidth': 2.5, 'marker': 'o'}),
+            ('4×4 IRC', 4, 4, 'MMSE', {'color': '#FF9800', 'linestyle': '-', 'linewidth': 2.5, 'marker': 'o'}),
             ('4×4 SIC', 4, 4, 'SIC', {'color': '#FF9800', 'linestyle': '--', 'linewidth': 2.5, 'marker': 's'}),
-            ('8×4 MMSE', 8, 4, 'MMSE', {'color': '#F44336', 'linestyle': '-', 'linewidth': 3, 'marker': 'o'}),
-            ('8×4 SIC', 8, 4, 'SIC', {'color': '#F44336', 'linestyle': '--', 'linewidth': 3, 'marker': 's'}),
         ]
         
         snr_range = self.params['snr_range']
@@ -388,16 +386,15 @@ class SimulationWorker(QThread):
         print(f"  Frequency: {self.params.get('frequency_ghz', 'NO ESPECIFICADO')} GHz")
         print(f"  Velocity: {self.params.get('velocity_kmh', 'NO ESPECIFICADO')} km/h")
         
-        # Configuraciones a comparar (8 configuraciones totales)
+        # Configuraciones a comparar (6 configuraciones totales: 3 antenas × 2 detectores)
+        # Organizadas para mostrar: Fila 1 (IRC): 2×2, 4×2, 4×4 | Fila 2 (SIC): 2×2, 4×2, 4×4
         test_configs = [
-            {'name': '2×2 MMSE', 'num_tx': 2, 'num_rx': 2, 'detector': 'MMSE'},
+            {'name': '2×2 IRC', 'num_tx': 2, 'num_rx': 2, 'detector': 'MMSE'},
+            {'name': '4×2 IRC', 'num_tx': 4, 'num_rx': 2, 'detector': 'MMSE'},
+            {'name': '4×4 IRC', 'num_tx': 4, 'num_rx': 4, 'detector': 'MMSE'},
             {'name': '2×2 SIC', 'num_tx': 2, 'num_rx': 2, 'detector': 'SIC'},
-            {'name': '4×2 MMSE', 'num_tx': 4, 'num_rx': 2, 'detector': 'MMSE'},
             {'name': '4×2 SIC', 'num_tx': 4, 'num_rx': 2, 'detector': 'SIC'},
-            {'name': '4×4 MMSE', 'num_tx': 4, 'num_rx': 4, 'detector': 'MMSE'},
             {'name': '4×4 SIC', 'num_tx': 4, 'num_rx': 4, 'detector': 'SIC'},
-            {'name': '8×4 MMSE', 'num_tx': 8, 'num_rx': 4, 'detector': 'MMSE'},
-            {'name': '8×4 SIC', 'num_tx': 8, 'num_rx': 4, 'detector': 'SIC'},
         ]
         
         results_list = []
@@ -560,7 +557,7 @@ class SpatialMultiplexingGUI(QMainWindow):
         self.current_image_path = None
         self.current_num_tx = 2
         self.current_num_rx = 2
-        self.current_detector = 'MMSE'
+        self.current_detector = 'MMSE'  # Internamente MMSE, se muestra como IRC
         self.worker = None
         self.init_ui()
     
@@ -721,8 +718,8 @@ class SpatialMultiplexingGUI(QMainWindow):
         # Detector MIMO
         layout.addWidget(QLabel("Detector MIMO:"), 7, 0)
         self.detector_combo = QComboBox()
-        self.detector_combo.addItems(['MMSE', 'SIC'])
-        self.detector_combo.setCurrentText('MMSE')
+        self.detector_combo.addItems(['IRC', 'SIC'])
+        self.detector_combo.setCurrentText('IRC')
         self.detector_combo.currentTextChanged.connect(self.update_config)
         layout.addWidget(self.detector_combo, 7, 1)
         
@@ -732,7 +729,7 @@ class SpatialMultiplexingGUI(QMainWindow):
         layout.addWidget(info_label, 8, 0, 1, 2)
         
         # SNR recomendado por configuración
-        snr_help = QLabel("💡 SNR recomendado: 2×2→20-25dB, 4×2→25-30dB, 4×4/8×4→30-35dB")
+        snr_help = QLabel("💡 SNR recomendado: 2×2→20-25dB, 4×2→25-30dB, 4×4→30-35dB")
         snr_help.setStyleSheet("color: #0066cc; font-size: 9pt; padding: 5px;")
         snr_help.setWordWrap(True)
         layout.addWidget(snr_help, 9, 0, 1, 2)
@@ -865,14 +862,18 @@ class SpatialMultiplexingGUI(QMainWindow):
             num_rx = int(self.num_rx_combo.currentText())
             detector_type = self.detector_combo.currentText()
             
+            # Mapear IRC a MMSE (IRC es solo el nombre visual)
+            if detector_type == 'IRC':
+                detector_type = 'MMSE'
+            
             # Validar configuraciones válidas para TM4 Spatial Multiplexing
-            valid_configs = [(2,2), (4,2), (4,4), (8,4)]
+            valid_configs = [(2,2), (4,2), (4,4)]  # Sin 8×4
             if (num_tx, num_rx) not in valid_configs:
                 QMessageBox.warning(
                     self, 
                     'Configuración Inválida',
                     f'La configuración {num_tx}×{num_rx} no es válida para TM4 Spatial Multiplexing.\n\n'
-                    f'Configuraciones válidas: 2×2, 4×2, 4×4, 8×4'
+                    f'Configuraciones válidas: 2×2, 4×2, 4×4'
                 )
                 # Restaurar a configuración válida anterior o default
                 self.num_tx_combo.setCurrentText('2')
@@ -914,7 +915,9 @@ class SpatialMultiplexingGUI(QMainWindow):
             config_info[' Spatial Multiplexing (TM4) '] = ''
             config_info['Num. Transmisores'] = f'{num_tx} TX'
             config_info['Num. Receptores'] = f'{num_rx} RX'
-            config_info['Detector MIMO'] = detector_type
+            # Mostrar IRC en lugar de MMSE visualmente
+            detector_display = 'IRC' if detector_type == 'MMSE' else detector_type
+            config_info['Detector MIMO'] = detector_display
             config_info['Rank'] = 'Adaptativo (1-4 según canal)'
             config_info['Max Multiplexing Gain'] = f'{min(num_tx, num_rx)}x'
             config_info[' Canal Multipath '] = ''
@@ -925,7 +928,7 @@ class SpatialMultiplexingGUI(QMainWindow):
             self.info_panel.update_config(config_info)
             
             self.statusBar().showMessage(
-                f'Config: {num_tx}×{num_rx} Spatial Multiplexing, {detector_type}, {bandwidth} MHz, {modulation}, Rayleigh MP'
+                f'Config: {num_tx}×{num_rx} Spatial Multiplexing, {detector_display}, {bandwidth} MHz, {modulation}, Rayleigh MP'
             )
             
         except Exception as e:
@@ -1241,7 +1244,7 @@ class SpatialMultiplexingGUI(QMainWindow):
         self.results_tabs.setCurrentWidget(self.ber_plot)
     
     def plot_multiantenna_test(self, results):
-        '''Grafica prueba multiantena (8 configuraciones: mosaico de imágenes 2×4)'''
+        '''Grafica prueba multiantena (6 configuraciones: mosaico 2×3 - Fila 1: IRC, Fila 2: SIC)'''
         fig = self.mimo_comparison_plot.get_figure()
         fig.clear()
         
@@ -1251,19 +1254,19 @@ class SpatialMultiplexingGUI(QMainWindow):
         if img_original.mode != 'RGB':
             img_original = img_original.convert('RGB')
         
-        # Configurar figura para 2 filas × 4 columnas
-        fig.set_size_inches(20, 10)
+        # Configurar figura para 2 filas × 3 columnas
+        fig.set_size_inches(18, 12)
         
         # Obtener datos del worker
         results_list = results['results']  # Lista de diccionarios con resultados
         images_list = results['images']    # Lista de imágenes PIL
         
-        # Crear grid 2×4
-        for idx in range(min(8, len(results_list))):
+        # Crear grid 2×3 (IRC arriba, SIC abajo)
+        for idx in range(min(6, len(results_list))):
             result_data = results_list[idx]
             img_recon = images_list[idx]
             
-            ax = fig.add_subplot(2, 4, idx + 1)
+            ax = fig.add_subplot(2, 3, idx + 1)
             
             # Mostrar imagen reconstruida
             ax.imshow(img_recon)
