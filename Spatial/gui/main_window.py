@@ -80,15 +80,22 @@ class SimulationWorker(QThread):
         # Obtener config del sistema OFDM
         config = self.ofdm_system.config
         
-        # Calcular capacidad por símbolo OFDM (249 subportadoras de datos)
+        # Calcular subportadoras de datos según el ResourceMapper (respeta ancho de banda)
         from core.modulator import QAMModulator
+        from core.resource_mapper import ResourceMapper
+        
         qam_mod = QAMModulator(config.modulation)
+        resource_mapper = ResourceMapper(config)
+        data_indices = resource_mapper.get_data_indices()
+        
         bits_per_symbol = int(np.log2(len(qam_mod.constellation)))
-        data_subcarriers = 249  # Subportadoras de datos en LTE
-        bits_per_ofdm = data_subcarriers * bits_per_symbol
+        num_data_subcarriers = len(data_indices)  # Calculado según ancho de banda
+        bits_per_ofdm = num_data_subcarriers * bits_per_symbol
         num_ofdm_symbols = int(np.ceil(total_bits / bits_per_ofdm))
         
-        print(f"  Procesando en {num_ofdm_symbols} bloques OFDM ({bits_per_ofdm} bits/bloque)")
+        print(f"  Subportadoras de datos: {num_data_subcarriers}")
+        print(f"  Bits por OFDM: {bits_per_ofdm}")
+        print(f"  Procesando en {num_ofdm_symbols} bloques OFDM")
         print(f"  TIEMPO ESTIMADO: ~{(num_ofdm_symbols * 0.007):.1f} segundos")
         
         # Transmitir en bloques (método del test que funciona correctamente)
@@ -102,6 +109,10 @@ class SimulationWorker(QThread):
             if block_idx % 100 == 0 or block_idx == num_ofdm_symbols - 1:
                 progress_pct = 30 + int((block_idx / num_ofdm_symbols) * 40)
                 self.progress.emit(progress_pct, f"Transmitiendo bloque {block_idx+1}/{num_ofdm_symbols}...")
+            
+            # IMPORTANTE: Resetear semilla aleatoria para cada bloque
+            # Esto asegura que cada bloque tenga un canal diferente
+            np.random.seed(None)
             
             # Extraer bits para este bloque
             start_bit = block_idx * bits_per_ofdm
@@ -132,7 +143,7 @@ class SimulationWorker(QThread):
                     detector_type=self.params.get('detector_type', 'MMSE'),
                     modulation=config.modulation,
                     snr_db=self.params['snr_db'],
-                    config=config,
+                    config=config,  # Pasar config para usar mismo ancho de banda
                     channel_type='rayleigh_mp',
                     itu_profile=self.params.get('itu_profile', 'Pedestrian_A'),
                     velocity_kmh=self.params.get('velocity_kmh', 3),
@@ -317,7 +328,7 @@ class SimulationWorker(QThread):
                         detector_type=detector_type,
                         modulation=config.modulation,
                         snr_db=snr_db,
-                        config=config,
+                        config=config,  # Pasar config para usar mismo ancho de banda
                         channel_type='rayleigh_mp',
                         itu_profile=self.params.get('itu_profile', 'Pedestrian_A'),
                         velocity_kmh=self.params.get('velocity_kmh', 3),
@@ -411,16 +422,23 @@ class SimulationWorker(QThread):
             cp_type=self.params['cp_type']
         )
         
-        # Calcular capacidad por símbolo OFDM
+        # Calcular subportadoras de datos según ResourceMapper (respeta ancho de banda)
         from core.modulator import QAMModulator
+        from core.resource_mapper import ResourceMapper
+        
         qam_mod = QAMModulator(config.modulation)
+        resource_mapper = ResourceMapper(config)
+        data_indices = resource_mapper.get_data_indices()
+        
         bits_per_symbol = int(np.log2(len(qam_mod.constellation)))
-        data_subcarriers = 249
-        bits_per_ofdm = data_subcarriers * bits_per_symbol
+        num_data_subcarriers = len(data_indices)  # Calculado según ancho de banda
+        bits_per_ofdm = num_data_subcarriers * bits_per_symbol
         num_ofdm_symbols = int(np.ceil(len(bits) / bits_per_ofdm))
         total_bits = len(bits)
         
-        print(f"  Bloques OFDM: {num_ofdm_symbols} ({bits_per_ofdm} bits/bloque)")
+        print(f"  Subportadoras de datos: {num_data_subcarriers}")
+        print(f"  Bits por OFDM: {bits_per_ofdm}")
+        print(f"  Bloques OFDM: {num_ofdm_symbols}")
         print(f"  TOTAL DE SIMULACIONES: {len(test_configs)} configs × {num_ofdm_symbols} bloques = {len(test_configs) * num_ofdm_symbols:,} llamadas")
         print(f"  TIEMPO ESTIMADO: ~{(len(test_configs) * num_ofdm_symbols * 0.007):.0f} segundos (~{(len(test_configs) * num_ofdm_symbols * 0.007 / 60):.1f} minutos)")
         
@@ -446,6 +464,9 @@ class SimulationWorker(QThread):
                     progress_pct = int(10 + (blocks_processed / total_blocks) * 85)
                     self.progress.emit(progress_pct, 
                                      f"{test_config['name']}: {block_idx+1}/{num_ofdm_symbols} bloques")
+                
+                # IMPORTANTE: Resetear semilla aleatoria para cada bloque
+                np.random.seed(None)
                 
                 # Extraer bits del bloque
                 start_bit = block_idx * bits_per_ofdm
@@ -474,7 +495,7 @@ class SimulationWorker(QThread):
                         detector_type=detector_type,
                         modulation=config.modulation,
                         snr_db=self.params['snr_db'],
-                        config=config,
+                        config=config,  # Pasar config para usar mismo ancho de banda
                         channel_type='rayleigh_mp',
                         itu_profile=self.params.get('itu_profile', 'Pedestrian_A'),
                         velocity_kmh=self.params.get('velocity_kmh', 3),
@@ -985,6 +1006,8 @@ class SpatialMultiplexingGUI(QMainWindow):
             'num_rx': self.current_num_rx,
             'detector_type': self.current_detector,
             'channel_type': 'rayleigh_mp',
+            'itu_profile': self.itu_profile_combo.currentText(),
+            'frequency_ghz': self.frequency_spin.value(),
             'velocity_kmh': self.velocity_spin.value()
         }
         

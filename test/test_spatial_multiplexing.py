@@ -37,9 +37,11 @@ from utils.image_processing import ImageProcessor
 # ============================================================================
 # CONFIGURACIÓN GLOBAL
 # ============================================================================
-SNR_DB = 20  # SNR en dB - Modifica este valor para probar diferentes BER
+SNR_DB = 25  # SNR en dB - Modifica este valor para probar diferentes BER
              # Valores sugeridos: 5-10 (BER alto), 15-20 (medio), 25-30 (bajo)
-# ============================================================================
+BANDWIDTH = 10.0  # Ancho de banda en MHz (1.25, 2.5, 5, 10, 15, 20)
+                 # 5 MHz = 249 subportadoras de datos
+                 # 10 MHz = 499 subportadoras de datos# ============================================================================
 
 
 def test_spatial_multiplexing_single(
@@ -51,6 +53,7 @@ def test_spatial_multiplexing_single(
     detector_type,
     snr_db=None,  # Si es None, usa SNR_DB global
     modulation='64-QAM',
+    bandwidth=5.0,  # Ancho de banda en MHz
     output_dir='results/mimo'
 ):
     """
@@ -65,6 +68,7 @@ def test_spatial_multiplexing_single(
         detector_type: 'MMSE', 'SIC', etc.
         snr_db: SNR en dB (usa SNR_DB global si es None)
         modulation: Modulación a usar
+        bandwidth: Ancho de banda en MHz (1.25, 2.5, 5, 10, 15, 20)
         output_dir: Directorio de salida
     """
     # Usar SNR global si no se especifica
@@ -74,17 +78,24 @@ def test_spatial_multiplexing_single(
     total_bits = len(bits)
     print(f"      Transmitiendo {total_bits:,} bits ({metadata['width']}x{metadata['height']}px) para {num_tx}x{num_rx}")
     
-    # Calcular bits por bloque basado en el número REAL de subportadoras de datos
-    # El sistema LTE tiene 249 subportadoras de datos (de 300 totales - CRS, DC, guardas)
-    # Con 64-QAM: 6 bits por símbolo
-    # IMPORTANTE: En spatial multiplexing, el número de bits por OFDM es CONSTANTE
-    # El rank solo divide los símbolos en capas paralelas, NO aumenta la capacidad por OFDM symbol
-    data_subcarriers_per_symbol = 249  # Número real de subportadoras de datos en LTE
-    bits_per_ofdm_symbol = data_subcarriers_per_symbol * 6  # 6 bits por símbolo 64-QAM
+    # Crear configuración LTE con el ancho de banda especificado
+    from core.resource_mapper import ResourceMapper
+    config = LTEConfig(modulation=modulation, bandwidth=bandwidth)
+    
+    # Calcular bits por bloque usando ResourceMapper (dinámico según ancho de banda)
+    resource_mapper = ResourceMapper(config)
+    data_indices = resource_mapper.get_data_indices()
+    
+    from core.modulator import QAMModulator
+    qam_mod = QAMModulator(modulation)
+    bits_per_symbol = int(np.log2(len(qam_mod.constellation)))
+    
+    data_subcarriers_per_symbol = len(data_indices)  # Calculado según ancho de banda
+    bits_per_ofdm_symbol = data_subcarriers_per_symbol * bits_per_symbol
     
     # Calcular número de símbolos OFDM necesarios
     num_ofdm_symbols = int(np.ceil(total_bits / bits_per_ofdm_symbol))
-    print(f"      Necesita ~{num_ofdm_symbols} símbolos OFDM (capacidad: {bits_per_ofdm_symbol} bits/símbolo con {data_subcarriers_per_symbol} subportadoras)")
+    print(f"      Necesita ~{num_ofdm_symbols} símbolos OFDM (capacidad: {bits_per_ofdm_symbol} bits/símbolo con {data_subcarriers_per_symbol} subportadoras, BW={bandwidth} MHz)")
 
     
     # Transmitir en bloques
@@ -110,6 +121,7 @@ def test_spatial_multiplexing_single(
                 detector_type=detector_type,
                 modulation=modulation,
                 snr_db=snr_db,
+                config=config,  # Pasar config para usar mismo ancho de banda
                 channel_type='rayleigh_mp',
                 itu_profile='Pedestrian_A',
                 velocity_kmh=3,
@@ -159,7 +171,7 @@ def test_spatial_multiplexing_single(
     }
 
 
-def test_all_configurations(image_path='img/entre-ciel-et-terre.jpg', snr_db=None):
+def test_all_configurations(image_path='img/entre-ciel-et-terre.jpg', snr_db=None, bandwidth=5.0):
     """
     Prueba todas las configuraciones y genera UNA imagen con todas las comparaciones.
     
@@ -172,6 +184,7 @@ def test_all_configurations(image_path='img/entre-ciel-et-terre.jpg', snr_db=Non
         image_path: Ruta de la imagen a transmitir
         snr_db: SNR en dB. Si es None, usa SNR_DB global
                (recomendado: 25-30 para 64-QAM, 15-20 para 16-QAM, 5-10 para BER alto)
+        bandwidth: Ancho de banda en MHz (1.25, 2.5, 5, 10, 15, 20). Default: 5 MHz
     """
     # Usar SNR global si no se especifica
     if snr_db is None:
@@ -181,6 +194,7 @@ def test_all_configurations(image_path='img/entre-ciel-et-terre.jpg', snr_db=Non
     print(f"  TEST COMPLETO: SPATIAL MULTIPLEXING (TM4)")
     print(f"  Una sola imagen de salida con todas las configuraciones")
     print(f"  SNR: {snr_db} dB (variable global SNR_DB = {SNR_DB} dB)")
+    print(f"  Ancho de banda: {bandwidth} MHz")
     print(f"{'#'*80}\n")
     
     output_dir = 'results/mimo'
@@ -228,6 +242,7 @@ def test_all_configurations(image_path='img/entre-ciel-et-terre.jpg', snr_db=Non
                     detector_type=detector,
                     snr_db=snr_db,
                     modulation='64-QAM',
+                    bandwidth=bandwidth,  # Pasar ancho de banda
                     output_dir=output_dir
                 )
                 results_grid[detector].append(result)
@@ -324,15 +339,20 @@ if __name__ == '__main__':
     
     # Ejecutar test completo
     # Para modificar el SNR, edita la variable SNR_DB al inicio del archivo
+    # Para modificar el ancho de banda, edita la variable BANDWIDTH al inicio del archivo
     # Valores sugeridos:
     #   - SNR_DB = 5-10:  BER alto (~10-30%), para pruebas de robustez
     #   - SNR_DB = 15-20: BER medio (~1-5%), imagen reconocible con ruido
     #   - SNR_DB = 25-30: BER bajo (~0.001-0.1%), imagen clara
+    #   - BANDWIDTH = 5:  249 subportadoras, menor capacidad
+    #   - BANDWIDTH = 10: 499 subportadoras, mayor capacidad (default GUI)
     print(f"\n[INFO] Usando SNR_DB = {SNR_DB} dB (configurado al inicio del archivo)")
-    print(f"       Para cambiar el SNR, modifica la variable global SNR_DB\n")
+    print(f"       Usando BANDWIDTH = {BANDWIDTH} MHz")
+    print(f"       Para cambiar estos valores, modifica las variables globales al inicio del archivo\n")
     
-    results = test_all_configurations(image_path=image_path)
+    results = test_all_configurations(image_path=image_path, bandwidth=BANDWIDTH)
     
     print("\n[SUCCESS] Test de Spatial Multiplexing completado [OK]")
     print(f"          Resultados en: results/mimo/")
-    print(f"          SNR usado: {SNR_DB} dB\n")
+    print(f"          SNR usado: {SNR_DB} dB")
+    print(f"          Ancho de banda: {BANDWIDTH} MHz\n")
