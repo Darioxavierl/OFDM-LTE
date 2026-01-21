@@ -36,6 +36,7 @@ from config import LTEConfig
 from core.modulator import OFDMModulator
 from core.demodulator import OFDMDemodulator
 from core.channel import ChannelSimulator
+from core.mimo_channel_estimator_periodic import MIMOChannelEstimatorPeriodic
 
 
 class OFDMTransmitter:
@@ -1985,17 +1986,50 @@ def simulate_spatial_multiplexing(
         
         layers = layer_mapper.map_to_layers(qam_symbols)  # [rank_used, symbols_per_layer]
         
-        # Precoding: x = W @ layers
-        precoded = W_precoder @ layers  # [num_tx, symbols_per_layer]
+        # ===== ARQUITECTURA CORRECTA PARA TM4 SPATIAL MULTIPLEXING =====
+        # 1. Mapear cada layer a grid (obtener índices de datos)
+        # 2. Aplicar precoding SOLO en posiciones de datos
+        # 3. Insertar pilotos CRS ortogonales por TX (sin precoding)
         
-        # Mapear a grids OFDM por cada antena TX
+        # Obtener índices de recursos
+        data_indices = resource_mapper.get_data_indices()
+        
+        # Crear grids TX inicializados (uno por antena física)
+        grids_tx_ofdm = [np.zeros(config.N, dtype=complex) for _ in range(num_tx)]
+        
+        # Aplicar precoding por subportadora solo en posiciones de datos
+        for data_idx, sc_idx in enumerate(data_indices):
+            if data_idx < layers.shape[1]:  # Verificar que tenemos datos
+                # Extraer símbolos de todas las layers en esta subportadora
+                layers_k = layers[:, data_idx]  # [rank_used]
+                
+                # Precoding: x[k] = W @ layers[k]
+                x_k = W_precoder @ layers_k  # [num_tx]
+                
+                # Asignar a cada antena TX
+                for tx_idx in range(num_tx):
+                    grids_tx_ofdm[tx_idx][sc_idx] = x_k[tx_idx]
+        
+        # Insertar pilotos CRS ortogonales usando MIMOChannelEstimatorPeriodic
+        # Crear estimador temporal para obtener índices de pilotos ortogonales
+        temp_estimator = MIMOChannelEstimatorPeriodic(
+            config=config,
+            num_tx=num_tx,
+            num_rx=1  # No importa para obtener índices
+        )
+        pilot_indices_per_tx = temp_estimator.get_orthogonal_pilot_indices()
+        
         for tx_idx in range(num_tx):
-            tx_symbols = precoded[tx_idx, :]
-            grid_tx, _ = resource_mapper.map_symbols(tx_symbols)
-            all_grids_tx[tx_idx].append(grid_tx)
+            pilot_indices_tx = pilot_indices_per_tx[tx_idx]
+            pilots_tx = temp_estimator.pilot_patterns[tx_idx].generate_pilots(len(pilot_indices_tx))
+            grids_tx_ofdm[tx_idx][pilot_indices_tx] = pilots_tx
+        
+        # Guardar grids y generar señales temporales
+        for tx_idx in range(num_tx):
+            all_grids_tx[tx_idx].append(grids_tx_ofdm[tx_idx])
             
             # IFFT + CP
-            time_tx = np.fft.ifft(grid_tx) * np.sqrt(config.N)
+            time_tx = np.fft.ifft(grids_tx_ofdm[tx_idx]) * np.sqrt(config.N)
             signal_tx = np.concatenate([time_tx[-config.cp_length:], time_tx])
             all_signals_tx[tx_idx].append(signal_tx)
     
@@ -2054,8 +2088,15 @@ def simulate_spatial_multiplexing(
         
         all_grids_rx_per_antenna.append(grids_rx)
     
-    # MIMO Detection con Perfect CSI (matriz H real)
-    print(f"[7/7] MIMO Detection ({detector_type}) with Perfect CSI...")
+    # ===== FASE 3: MIMO Detection con CRS Estimation H[k] =====
+    print(f"[7/7] MIMO Detection ({detector_type}) with CRS Estimation H[k]...")
+    
+    # Crear estimador CRS para estimar H[rx, tx, k] por subportadora
+    crs_estimator = MIMOChannelEstimatorPeriodic(
+        config=config,
+        num_tx=num_tx,
+        num_rx=num_rx
+    )
     
     mimo_detector = MIMODetector(
         num_rx=num_rx,
@@ -2064,30 +2105,48 @@ def simulate_spatial_multiplexing(
         constellation=qam_modulator.get_constellation()
     )
     
-    # Calcular H efectiva: H_eff = H @ W
-    H_eff = H_channel @ W_precoder  # [num_rx, rank_used]
     noise_variance = 10 ** (-snr_db / 10)
     
-    # Decodificar cada sÃ­mbolo OFDM
+    # Decodificar cada símbolo OFDM
     all_bits_rx = []
     total_bit_errors = 0
     
     for ofdm_idx in range(min(num_ofdm_symbols, len(all_grids_rx_per_antenna[0]))):
         bits_chunk = all_bits_chunks[ofdm_idx]
         
-        # Extraer sÃ­mbolos de datos de cada RX
-        y_received = np.zeros((num_rx, num_data_subcarriers), dtype=complex)
-        for rx_idx in range(num_rx):
-            grid_rx = all_grids_rx_per_antenna[rx_idx][ofdm_idx]
-            y_received[rx_idx, :] = grid_rx[data_indices]
+        # Estimar H[rx, tx, k] de pilotos CRS
+        # Concatenar grids RX de todas las antenas para este símbolo OFDM
+        grids_rx_ofdm = np.array([all_grids_rx_per_antenna[rx_idx][ofdm_idx] 
+                                   for rx_idx in range(num_rx)])  # [num_rx, N]
         
-        # MIMO detection
-        layers_rx = mimo_detector.detect(
-            y_received=y_received,
-            H_channel=H_eff,
-            noise_variance=noise_variance,
-            W_precoder=None  # Ya aplicado en H_eff
-        )
+        # Estimación CRS: retorna H[num_rx, num_tx, N]
+        H_est_freq, _ = crs_estimator.estimate_channel_from_grid(grids_rx_ofdm, return_full_freq=True)
+        
+        print(f"  OFDM symbol {ofdm_idx}: H_est shape = {H_est_freq.shape}")
+        
+        # Detección por subportadora usando H[k] específico
+        layers_rx = np.zeros((rank_used, num_data_subcarriers), dtype=complex)
+        
+        for data_idx, sc_idx in enumerate(data_indices[:num_data_subcarriers]):
+            # H efectiva para esta subportadora: H_eff[k] = H[k] @ W
+            H_k = H_est_freq[:, :, sc_idx]  # [num_rx, num_tx]
+            H_eff_k = H_k @ W_precoder      # [num_rx, rank_used]
+            
+            # Símbolo recibido en esta subportadora
+            y_k = np.array([all_grids_rx_per_antenna[rx_idx][ofdm_idx][sc_idx] 
+                           for rx_idx in range(num_rx)])  # [num_rx]
+            
+            # Detección ZF: x_hat = (H'H)^-1 H' y
+            H_eff_k_H = H_eff_k.conj().T  # [rank_used, num_rx]
+            G = H_eff_k_H @ H_eff_k       # [rank_used, rank_used]
+            
+            try:
+                G_inv = np.linalg.inv(G)
+                x_hat_k = G_inv @ H_eff_k_H @ y_k  # [rank_used]
+                layers_rx[:, data_idx] = x_hat_k
+            except np.linalg.LinAlgError:
+                # Matriz singular, usar 0
+                layers_rx[:, data_idx] = 0
         
         # Layer demapping
         symbols_rx = layer_mapper.demap_from_layers(layers_rx, original_length=num_data_subcarriers)

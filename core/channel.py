@@ -398,8 +398,9 @@ class ChannelSimulator:
         """
         Transmite señales MIMO con Spatial Multiplexing (diferentes datos por antena TX)
         
-        Diferente de transmit_mimo() que es para DIVERSIDAD (Alamouti/SFBC).
-        Aquí cada TX antenna transmite DIFERENTES datos.
+        Soporta:
+        - Flat-fading (AWGN/fading): Un coeficiente h por link
+        - Multipath (rayleigh_mp): Canal selectivo en frecuencia
         
         Args:
             tx_signals: Lista de señales TX [signal_tx0, signal_tx1, ..., signal_tx_N]
@@ -408,7 +409,9 @@ class ChannelSimulator:
         Returns:
             tuple: (signals_rx, H_channel)
                 - signals_rx: Lista de señales recibidas [signal_rx0, ..., signal_rx_M]
-                - H_channel: Matriz de canal [num_rx, num_tx] con H[i,j] = canal TX_j -> RX_i
+                - H_channel: Matriz de canal [num_rx, num_tx]
+                  * Flat-fading: H[i,j] = coeficiente escalar
+                  * Multipath: H[i,j] = coeficiente promedio (para Perfect CSI)
         """
         num_tx = len(tx_signals)
         
@@ -416,38 +419,75 @@ class ChannelSimulator:
         signal_length = min(len(sig) for sig in tx_signals)
         tx_signals_aligned = [sig[:signal_length] for sig in tx_signals]
         
-        # Generar matriz de canal MIMO H[num_rx, num_tx]
-        # Cada elemento H[i,j] es el canal de TX_j a RX_i
+        # Inicializar señales RX
+        signals_rx = [np.zeros(signal_length, dtype=complex) for _ in range(num_rx)]
+        
+        # Matriz H para Perfect CSI
         H_channel = np.zeros((num_rx, num_tx), dtype=complex)
         
-        # Inicializar señales RX
-        signals_rx = []
+        # Procesar cada link TX -> RX
+        if self.channel_type == 'rayleigh_mp':
+            # Multipath: cada link tiene canal selectivo en frecuencia
+            # Necesitamos crear canales independientes para cada link
+            from core.rayleighchannel import RayleighChannel
+            
+            # Obtener parámetros del canal multipath
+            delays = self.channel.rayleigh.delays
+            gains = self.channel.rayleigh.gains
+            Fs = self.channel.rayleigh.Fs
+            fD = self.channel.rayleigh.fD
+            
+            # Crear canal independiente para cada link TX->RX
+            for rx_idx in range(num_rx):
+                for tx_idx in range(num_tx):
+                    # Canal Rayleigh independiente para este link
+                    h_link = RayleighChannel(Fs, fD, delays, gains)
+                    
+                    # Aplicar canal multipath
+                    signal_after_channel = h_link.filter(tx_signals_aligned[tx_idx])
+                    
+                    # Acumular en RX
+                    signals_rx[rx_idx] += signal_after_channel
+                    
+                    # Para Perfect CSI: generar respuesta impulsiva y usar primer tap
+                    delays_h, taps_h = h_link.impulse_response(N=1)
+                    H_channel[rx_idx, tx_idx] = taps_h[0]
+            
+            # Añadir ruido una sola vez por RX
+            for rx_idx in range(num_rx):
+                signal_power = np.mean(np.abs(signals_rx[rx_idx]) ** 2)
+                noise_power = signal_power / self.channel.snr_linear
+                
+                noise_real = np.random.normal(0, np.sqrt(noise_power / 2), signal_length)
+                noise_imag = np.random.normal(0, np.sqrt(noise_power / 2), signal_length)
+                noise = noise_real + 1j * noise_imag
+                
+                signals_rx[rx_idx] += noise
         
-        for rx_idx in range(num_rx):
-            # Señal recibida en esta antena RX es la suma de todas las TX
-            rx_signal = np.zeros(signal_length, dtype=complex)
+        else:
+            # Flat-fading (AWGN/fading): un coeficiente h por link
+            for rx_idx in range(num_rx):
+                for tx_idx in range(num_tx):
+                    # Generar coeficiente de canal h[rx_idx, tx_idx]
+                    # Rayleigh fading: h ~ CN(0, 1) según TS 36.211
+                    h_real = np.random.normal(0, 1/np.sqrt(2))
+                    h_imag = np.random.normal(0, 1/np.sqrt(2))
+                    h = h_real + 1j * h_imag
+                    
+                    H_channel[rx_idx, tx_idx] = h
+                    
+                    # Aplicar canal: y = h * x
+                    signals_rx[rx_idx] += h * tx_signals_aligned[tx_idx]
             
-            for tx_idx in range(num_tx):
-                # Generar coeficiente de canal h[rx_idx, tx_idx]
-                # Rayleigh fading: h ~ CN(0, 1)
-                h_real = np.random.normal(0, 1/np.sqrt(2))
-                h_imag = np.random.normal(0, 1/np.sqrt(2))
-                h = (h_real + 1j * h_imag) / np.sqrt(num_tx)  # Normalizado por número de TX
+            # Añadir ruido AWGN a cada RX
+            for rx_idx in range(num_rx):
+                signal_power = np.mean(np.abs(signals_rx[rx_idx]) ** 2)
+                noise_power = signal_power / self.channel.snr_linear
                 
-                H_channel[rx_idx, tx_idx] = h
+                noise_real = np.random.normal(0, np.sqrt(noise_power / 2), signal_length)
+                noise_imag = np.random.normal(0, np.sqrt(noise_power / 2), signal_length)
+                noise = noise_real + 1j * noise_imag
                 
-                # Aplicar canal: y = h * x
-                rx_signal += h * tx_signals_aligned[tx_idx]
-            
-            # Añadir ruido AWGN a esta antena RX
-            signal_power = np.mean(np.abs(rx_signal) ** 2)
-            noise_power = signal_power / self.channel.snr_linear
-            
-            noise_real = np.random.normal(0, np.sqrt(noise_power / 2), signal_length)
-            noise_imag = np.random.normal(0, np.sqrt(noise_power / 2), signal_length)
-            noise = noise_real + 1j * noise_imag
-            
-            rx_signal_noisy = rx_signal + noise
-            signals_rx.append(rx_signal_noisy)
+                signals_rx[rx_idx] += noise
         
         return signals_rx, H_channel
