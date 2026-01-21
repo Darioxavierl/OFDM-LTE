@@ -125,18 +125,19 @@ class LTECodebook:
         """
         if self.num_tx == 2:
             # 2×2: 3 matrices (TS 36.211 Table 6.3.4.2.3-1)
+            # Normalización: ||W||²_F = 2 para rank=2
             codebook = [
-                # W0: Identity-like
+                # W0: Identity (||W||²_F = 2)
                 np.array([[1, 0],
-                         [0, 1]]) / np.sqrt(2),
+                         [0, 1]]),
                 
-                # W1: Hadamard-like
+                # W1: Hadamard (||W||²_F = 4/2 = 2)
                 np.array([[1, 1],
-                         [1, -1]]) / 2,
+                         [1, -1]]) / np.sqrt(2),
                 
-                # W2: Phase rotation
+                # W2: Phase rotation (||W||²_F = 4/2 = 2)
                 np.array([[1, 1],
-                         [1j, -1j]]) / 2,
+                         [1j, -1j]]) / np.sqrt(2),
             ]
         
         elif self.num_tx == 4:
@@ -221,24 +222,29 @@ class LTECodebook:
             # 4×3: 8 matrices
             for i in range(8):
                 theta = 2 * np.pi * i / 8
+                # ||W||²_F debe ser 3
+                # Suma: 1 + 1 + 1 + 3 = 6, dividir por sqrt(2) da 3
                 W = np.array([
                     [1, 0, 0],
                     [0, 1, 0],
                     [0, 0, 1],
                     [np.exp(1j * theta), np.exp(1j * theta), np.exp(1j * theta)]
-                ]) / np.sqrt(1.75)  # Normalización para mantener potencia
+                ]) / np.sqrt(2)
                 codebook.append(W)
         
         elif self.num_tx == 8:
             # 8×3: 16 matrices
+            # ||W||²_F debe ser 3: cada capa contribuye 1
             for i in range(16):
                 theta = 2 * np.pi * i / 16
                 W = np.zeros((8, 3), dtype=complex)
-                # Distribuir capas entre antenas
+                # Distribuir 3 capas: cada una normalizada a potencia 1
+                # Capa 0: antenas 0, 1, 2
                 W[0:3, 0] = [1, np.exp(1j*theta), np.exp(1j*2*theta)] / np.sqrt(3)
+                # Capa 1: antenas 3, 4, 5
                 W[3:6, 1] = [1, np.exp(1j*theta), np.exp(1j*2*theta)] / np.sqrt(3)
-                W[6:8, 2] = [1, np.exp(1j*theta)] / np.sqrt(2)
-                W[0, 2] = np.exp(1j*theta) / np.sqrt(2)
+                # Capa 2: antenas 5, 6, 7 (solapa con capa 1 en antena 5)
+                W[5:8, 2] = [1, np.exp(1j*theta), np.exp(1j*2*theta)] / np.sqrt(3)
                 codebook.append(W)
         
         else:
@@ -258,11 +264,12 @@ class LTECodebook:
         
         if self.num_tx == 4:
             # 4×4: 4 matrices (cuadradas)
+            # Normalización: ||W||²_F = 4 para rank=4
             
-            # W0: Identity
-            codebook.append(np.eye(4) / 2)
+            # W0: Identity (||W||²_F = 4 sin normalización)
+            codebook.append(np.eye(4, dtype=complex))
             
-            # W1: DFT matrix
+            # W1: DFT matrix (||W||²_F = 16/4 = 4 con /2)
             W_dft = np.zeros((4, 4), dtype=complex)
             for i in range(4):
                 for j in range(4):

@@ -15,107 +15,174 @@ from core.lte_receiver import LTEChannelEstimator, PilotPattern, LTEResourceGrid
 
 class MIMOChannelEstimatorPeriodic:
     """
-    Estimador de canal periódico para MIMO 2x1 o 2xN (SFBC Alamouti)
+    Estimador de canal periódico para MIMO con múltiples TX (2, 4, 8 antenas)
     
-    Estima H0 y H1 usando pilotos ortogonales:
-    - TX0: pilotos en posiciones pares (cell_id=0)
-    - TX1: pilotos en posiciones impares (cell_id=1)
+    Usa pilotos CRS ortogonales en frecuencia mediante diferentes cell_id:
+    - TX0: cell_id=0 (shift 0)
+    - TX1: cell_id=1 (shift 3 subportadoras)
+    - TX2: cell_id=2 (shift 6 subportadoras) 
+    - TX3: cell_id=3 (shift 9 subportadoras)
     
-    Implementa estimación periódica cada slot (como LTEReceiver) para:
+    Para 8 TX, se reutilizan cell_id con diferentes símbolos OFDM.
+    
+    Implementa estimación periódica cada slot para:
     - Tracking temporal del canal
     - Reducción de varianza por promediado
-    - Consistencia con SISO/SIMO
+    - Soporte Spatial Multiplexing y SFBC
     """
     
-    def __init__(self, config, slot_size: int = 14):
+    def __init__(self, config, num_tx: int = 2, num_rx: int = 2, slot_size: int = 14):
         """
         Inicializa estimador MIMO periódico
         
         Args:
             config: LTEConfig object
+            num_tx: Número de antenas TX (2, 4, o 8)
+            num_rx: Número de antenas RX
             slot_size: Número de símbolos OFDM por slot (default 14 como LTE)
         """
         self.config = config
+        self.num_tx = num_tx
+        self.num_rx = num_rx
         self.slot_size = slot_size
         
-        # Estimadores para cada TX (con diferentes cell_id para pilotos ortogonales)
-        self.estimator_tx0 = LTEChannelEstimator(config, cell_id=0)
-        self.estimator_tx1 = LTEChannelEstimator(config, cell_id=1)
+        if num_tx not in [2, 4, 8]:
+            raise ValueError(f"num_tx debe ser 2, 4 o 8, recibido: {num_tx}")
         
-        # Patrones de pilotos ortogonales
-        self.pilot_pattern_tx0 = PilotPattern(cell_id=0)
-        self.pilot_pattern_tx1 = PilotPattern(cell_id=1)
+        # Crear estimador y patrón de pilotos para cada TX
+        self.estimators = []
+        self.pilot_patterns = []
+        
+        for tx_idx in range(num_tx):
+            # Usar cell_id diferente para ortogonalizar pilotos en frecuencia
+            # LTE soporta cell_id 0-503, pero para ortogonalización usamos 0-3
+            cell_id = tx_idx % 4
+            
+            estimator = LTEChannelEstimator(config, cell_id=cell_id)
+            pilot_pattern = PilotPattern(cell_id=cell_id)
+            
+            self.estimators.append(estimator)
+            self.pilot_patterns.append(pilot_pattern)
         
         # Resource grid para obtener índices
         self.resource_grid = LTEResourceGrid(config.N, config.Nc)
+        
+        print(f"[MIMOChannelEstimatorPeriodic] Inicializado:")
+        print(f"  TX antennas: {num_tx}")
+        print(f"  RX antennas: {num_rx}")
+        print(f"  Cell IDs: {[tx_idx % 4 for tx_idx in range(num_tx)]}")
     
-    def get_orthogonal_pilot_indices(self) -> Tuple[np.ndarray, np.ndarray]:
+    def get_orthogonal_pilot_indices(self) -> List[np.ndarray]:
         """
-        Obtiene índices de pilotos ortogonales para TX0 y TX1
+        Obtiene índices de pilotos ortogonales para cada TX
+        
+        Usa shift en frecuencia basado en cell_id para separar pilotos:
+        - TX0 (cell_id=0): posiciones base
+        - TX1 (cell_id=1): posiciones base + shift
+        - TX2 (cell_id=2): posiciones base + 2*shift
+        - TX3 (cell_id=3): posiciones base + 3*shift
         
         Returns:
-            Tuple (pilot_indices_tx0, pilot_indices_tx1)
+            List de arrays con índices de pilotos por TX
         """
-        pilot_indices_all = self.resource_grid.get_pilot_indices()
-        pilot_indices_tx0 = pilot_indices_all[::2]   # Pares: 0, 2, 4, ...
-        pilot_indices_tx1 = pilot_indices_all[1::2]  # Impares: 1, 3, 5, ...
+        pilot_indices_per_tx = []
         
-        return pilot_indices_tx0, pilot_indices_tx1
+        for tx_idx in range(self.num_tx):
+            # Obtener índices según cell_id
+            cell_id = tx_idx % 4
+            pilot_pattern = self.pilot_patterns[tx_idx]
+            
+            # Obtener todos los pilotos para este cell_id
+            pilot_indices_all = self.resource_grid.get_pilot_indices()
+            
+            # Para ortogonalizar, tomar cada N-ésimo piloto con offset
+            # Esto simula el pattern CRS de LTE con diferentes antenna ports
+            step = self.num_tx if self.num_tx <= 4 else 4
+            offset = tx_idx % step
+            pilot_indices = pilot_indices_all[offset::step]
+            
+            pilot_indices_per_tx.append(pilot_indices)
+        
+        return pilot_indices_per_tx
     
     def estimate_channel_from_grid(self, 
-                                   grid_rx: np.ndarray) -> Tuple[np.ndarray, np.ndarray, Dict]:
+                                   grid_rx: np.ndarray,
+                                   return_full_freq: bool = True) -> Tuple[np.ndarray, Dict]:
         """
-        Estima H0 y H1 de un grid recibido (frecuencia) usando pilotos ortogonales
+        Estima canal H de un grid recibido usando pilotos ortogonales CRS
         
         Args:
-            grid_rx: Símbolos recibidos en dominio frecuencia (después de FFT)
-                     Shape: (N,) donde N = número de subportadoras
+            grid_rx: Símbolos recibidos en dominio frecuencia
+                     - Single RX: shape (N,) donde N = subportadoras
+                     - Multi RX: shape (num_rx, N)
+            return_full_freq: Si True, retorna H[k] por subportadora
+                             Si False, retorna H escalar promedio
         
         Returns:
-            Tuple (H0_full, H1_full, info_dict):
-                - H0_full: Estimación de canal TX0→RX para todas las subportadoras
-                - H1_full: Estimación de canal TX1→RX para todas las subportadoras
+            Tuple (H_estimated, info_dict):
+                - H_estimated: 
+                  * return_full_freq=True: [num_rx, num_tx, N] por subportadora
+                  * return_full_freq=False: [num_rx, num_tx] promedio escalar
                 - info_dict: Información adicional (SNR, índices, etc.)
         """
-        # Obtener índices de pilotos ortogonales
-        pilot_indices_tx0, pilot_indices_tx1 = self.get_orthogonal_pilot_indices()
+        # Manejar single vs multi RX
+        if grid_rx.ndim == 1:
+            # Single RX: expandir a (1, N)
+            grids_rx = grid_rx.reshape(1, -1)
+            num_rx_actual = 1
+        else:
+            # Multi RX: usar como está
+            grids_rx = grid_rx
+            num_rx_actual = grids_rx.shape[0]
         
-        # Generar pilotos conocidos
-        pilots_tx0 = self.pilot_pattern_tx0.generate_pilots(len(pilot_indices_tx0))
-        pilots_tx1 = self.pilot_pattern_tx1.generate_pilots(len(pilot_indices_tx1))
+        N = grids_rx.shape[1]  # Número de subportadoras
         
-        # Extraer pilotos recibidos
-        received_pilots_tx0 = grid_rx[pilot_indices_tx0]
-        received_pilots_tx1 = grid_rx[pilot_indices_tx1]
+        # Obtener índices de pilotos por TX
+        pilot_indices_per_tx = self.get_orthogonal_pilot_indices()
         
-        # Estimación LS en posiciones de pilotos
-        H0_at_pilots = received_pilots_tx0 / pilots_tx0
-        H1_at_pilots = received_pilots_tx1 / pilots_tx1
+        # Inicializar resultado
+        if return_full_freq:
+            H_estimated = np.zeros((num_rx_actual, self.num_tx, N), dtype=complex)
+        else:
+            H_estimated = np.zeros((num_rx_actual, self.num_tx), dtype=complex)
         
-        # Interpolación a todas las subportadoras
-        H0_full = self.estimator_tx0._interpolate_channel(
-            pilot_indices_tx0, H0_at_pilots, self.config.N
-        )
-        H1_full = self.estimator_tx1._interpolate_channel(
-            pilot_indices_tx1, H1_at_pilots, self.config.N
-        )
+        # Estimar canal para cada combinación RX-TX
+        for rx_idx in range(num_rx_actual):
+            for tx_idx in range(self.num_tx):
+                # Obtener pilotos para este TX
+                pilot_indices = pilot_indices_per_tx[tx_idx]
+                pilot_pattern = self.pilot_patterns[tx_idx]
+                estimator = self.estimators[tx_idx]
+                
+                # Generar pilotos conocidos
+                pilots_tx = pilot_pattern.generate_pilots(len(pilot_indices))
+                
+                # Extraer pilotos recibidos en este RX
+                received_pilots = grids_rx[rx_idx, pilot_indices]
+                
+                # Estimación LS en posiciones de pilotos
+                H_at_pilots = received_pilots / pilots_tx
+                
+                if return_full_freq:
+                    # Interpolar a todas las subportadoras
+                    H_full = estimator._interpolate_channel(
+                        pilot_indices, H_at_pilots, N
+                    )
+                    H_estimated[rx_idx, tx_idx, :] = H_full
+                else:
+                    # Promedio escalar
+                    H_estimated[rx_idx, tx_idx] = np.mean(H_at_pilots)
         
-        # Calcular SNR estimado de pilotos (opcional, para diagnóstico)
-        noise_var_tx0 = np.var(H0_at_pilots - np.mean(H0_at_pilots))
-        noise_var_tx1 = np.var(H1_at_pilots - np.mean(H1_at_pilots))
-        signal_power = np.mean(np.abs(H0_at_pilots) ** 2 + np.abs(H1_at_pilots) ** 2) / 2
-        noise_power = (noise_var_tx0 + noise_var_tx1) / 2
-        pilot_snr_db = 10 * np.log10(signal_power / (noise_power + 1e-10))
-        
+        # Calcular información adicional
         info = {
-            'pilot_snr_db': pilot_snr_db,
-            'pilot_indices_tx0': pilot_indices_tx0,
-            'pilot_indices_tx1': pilot_indices_tx1,
-            'num_pilots_tx0': len(pilot_indices_tx0),
-            'num_pilots_tx1': len(pilot_indices_tx1)
+            'num_pilots_per_tx': [len(pilot_indices_per_tx[i]) for i in range(self.num_tx)],
+            'pilot_indices': pilot_indices_per_tx,
+            'num_rx': num_rx_actual,
+            'num_tx': self.num_tx,
+            'N': N
         }
         
-        return H0_full, H1_full, info
+        return H_estimated, info
     
     def estimate_channel_periodic(self, 
                                   all_received_grids: List[np.ndarray]) -> Tuple[List[np.ndarray], 
