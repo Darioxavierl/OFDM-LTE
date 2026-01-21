@@ -29,6 +29,11 @@ from PIL import Image
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+# Verificar que estamos en el directorio correcto
+if not (project_root / 'core').exists():
+    # Estamos ejecutando desde test/, subir un nivel más
+    os.chdir(project_root)
+    
 from core.ofdm_core import simulate_spatial_multiplexing
 from config import LTEConfig
 from utils.image_processing import ImageProcessor
