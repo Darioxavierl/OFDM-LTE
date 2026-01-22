@@ -110,10 +110,6 @@ class SimulationWorker(QThread):
                 progress_pct = 30 + int((block_idx / num_ofdm_symbols) * 40)
                 self.progress.emit(progress_pct, f"Transmitiendo bloque {block_idx+1}/{num_ofdm_symbols}...")
             
-            # IMPORTANTE: Resetear semilla aleatoria para cada bloque
-            # Esto asegura que cada bloque tenga un canal diferente
-            np.random.seed(None)
-            
             # Extraer bits para este bloque
             start_bit = block_idx * bits_per_ofdm
             end_bit = min(start_bit + bits_per_ofdm, total_bits)
@@ -148,7 +144,8 @@ class SimulationWorker(QThread):
                     itu_profile=self.params.get('itu_profile', 'Pedestrian_A'),
                     velocity_kmh=self.params.get('velocity_kmh', 3),
                     frequency_ghz=self.params.get('frequency_ghz', 2.0),
-                    enable_csi_feedback=True
+                    enable_csi_feedback=True,
+                    enable_parallel=True  # CRÍTICO: procesar streams en paralelo
                 )
                 
                 if not should_print:
@@ -333,7 +330,8 @@ class SimulationWorker(QThread):
                         itu_profile=self.params.get('itu_profile', 'Pedestrian_A'),
                         velocity_kmh=self.params.get('velocity_kmh', 3),
                         frequency_ghz=self.params.get('frequency_ghz', 2.0),
-                        enable_csi_feedback=True
+                        enable_csi_feedback=True,
+                        enable_parallel=True  # CRÍTICO: procesar streams en paralelo
                     )
                     
                     ber_list.append(result['ber'])
@@ -457,6 +455,7 @@ class SimulationWorker(QThread):
             # Transmitir en bloques (método del test)
             all_bits_rx = []
             total_errors = 0
+            last_rank_used = None  # Track rank from last successful block
             
             for block_idx in range(num_ofdm_symbols):
                 # Actualizar progreso cada 100 bloques para no ralentizar
@@ -464,9 +463,6 @@ class SimulationWorker(QThread):
                     progress_pct = int(10 + (blocks_processed / total_blocks) * 85)
                     self.progress.emit(progress_pct, 
                                      f"{test_config['name']}: {block_idx+1}/{num_ofdm_symbols} bloques")
-                
-                # IMPORTANTE: Resetear semilla aleatoria para cada bloque
-                np.random.seed(None)
                 
                 # Extraer bits del bloque
                 start_bit = block_idx * bits_per_ofdm
@@ -487,6 +483,21 @@ class SimulationWorker(QThread):
                         old_stdout = sys.stdout
                         sys.stdout = io.StringIO()
                     
+                    # DEBUG: Verificar parámetros antes de llamar
+                    if block_idx == 0:
+                        print(f"\n[GUI DEBUG] Llamada a simulate_spatial_multiplexing:")
+                        print(f"  num_tx={num_tx}, num_rx={num_rx}")
+                        print(f"  detector_type={detector_type}")
+                        print(f"  SNR={self.params['snr_db']}")
+                        print(f"  channel_type='rayleigh_mp'")
+                        print(f"  itu_profile={self.params.get('itu_profile', 'Pedestrian_A')}")
+                        print(f"  velocity_kmh={self.params.get('velocity_kmh', 3)}")
+                        print(f"  frequency_ghz={self.params.get('frequency_ghz', 2.0)}")
+                        print(f"  config.bandwidth={config.bandwidth}")
+                        print(f"  config.modulation={config.modulation}")
+                        print(f"  config.N={config.N}")
+                        print(f"  len(bits_block)={len(bits_block)}")
+                    
                     result_block = simulate_spatial_multiplexing(
                         bits=bits_block,
                         num_tx=num_tx,
@@ -500,7 +511,8 @@ class SimulationWorker(QThread):
                         itu_profile=self.params.get('itu_profile', 'Pedestrian_A'),
                         velocity_kmh=self.params.get('velocity_kmh', 3),
                         frequency_ghz=self.params.get('frequency_ghz', 2.0),
-                        enable_csi_feedback=True
+                        enable_csi_feedback=True,
+                        enable_parallel=True  # CRÍTICO: procesar streams en paralelo
                     )
                     
                     if not should_print:
@@ -508,6 +520,9 @@ class SimulationWorker(QThread):
                     
                     all_bits_rx.append(result_block['bits_received_array'])
                     total_errors += result_block['bit_errors']
+                    
+                    # Save rank from successful block
+                    last_rank_used = result_block.get('rank_used', result_block.get('rank', None))
                     
                 except Exception as e:
                     if not should_print:
@@ -522,13 +537,14 @@ class SimulationWorker(QThread):
             bits_rx_full = np.concatenate(all_bits_rx)[:total_bits]
             ber = total_errors / total_bits if total_bits > 0 else 0.0
             
-            print(f"    BER: {ber:.6f} ({total_errors:,} errores)")
+            print(f"    BER: {ber:.6f} ({total_errors:,} errores), Rank usado: {last_rank_used}")
             
             # Crear resultado consolidado
             result = {
                 'bits_received_array': bits_rx_full,
                 'ber': ber,
-                'bit_errors': total_errors
+                'bit_errors': total_errors,
+                'rank_used': last_rank_used
             }
             
             # Reconstruir imagen
