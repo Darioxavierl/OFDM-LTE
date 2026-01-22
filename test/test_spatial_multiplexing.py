@@ -117,6 +117,21 @@ def test_spatial_multiplexing_single(
             bits_block = np.concatenate([bits_block, np.zeros(bits_per_ofdm_symbol - len(bits_block), dtype=int)])
         
         try:
+            # DEBUG: Verificar parámetros antes de llamar (solo primer bloque)
+            if block_idx == 0:
+                print(f"\n[TEST DEBUG] Llamada a simulate_spatial_multiplexing:")
+                print(f"  num_tx={num_tx}, num_rx={num_rx}")
+                print(f"  detector_type={detector_type}")
+                print(f"  SNR={snr_db}")
+                print(f"  channel_type='rayleigh_mp'")
+                print(f"  itu_profile='Pedestrian_A'")
+                print(f"  velocity_kmh=3")
+                print(f"  frequency_ghz=2.0")
+                print(f"  config.bandwidth={config.bandwidth}")
+                print(f"  config.modulation={config.modulation}")
+                print(f"  config.N={config.N}")
+                print(f"  len(bits_block)={len(bits_block)}")
+            
             # Simular transmisión de este bloque
             results = simulate_spatial_multiplexing(
                 bits=bits_block,

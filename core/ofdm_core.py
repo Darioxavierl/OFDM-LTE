@@ -2152,29 +2152,17 @@ def simulate_spatial_multiplexing(
         
         print(f"  OFDM symbol {ofdm_idx}: H_est shape = {H_est_freq.shape}")
         
-        # Detección por subportadora usando H[k] específico
-        layers_rx = np.zeros((rank_used, num_data_subcarriers), dtype=complex)
+        # Extraer señales recibidas en subportadoras de datos
+        y_data = grids_rx_ofdm[:, data_indices[:num_data_subcarriers]]  # [num_rx, num_data]
+        H_data = H_est_freq[:, :, data_indices[:num_data_subcarriers]]  # [num_rx, num_tx, num_data]
         
-        for data_idx, sc_idx in enumerate(data_indices[:num_data_subcarriers]):
-            # H efectiva para esta subportadora: H_eff[k] = H[k] @ W
-            H_k = H_est_freq[:, :, sc_idx]  # [num_rx, num_tx]
-            H_eff_k = H_k @ W_precoder      # [num_rx, rank_used]
-            
-            # Símbolo recibido en esta subportadora
-            y_k = np.array([all_grids_rx_per_antenna[rx_idx][ofdm_idx][sc_idx] 
-                           for rx_idx in range(num_rx)])  # [num_rx]
-            
-            # Detección ZF: x_hat = (H'H)^-1 H' y
-            H_eff_k_H = H_eff_k.conj().T  # [rank_used, num_rx]
-            G = H_eff_k_H @ H_eff_k       # [rank_used, rank_used]
-            
-            try:
-                G_inv = np.linalg.inv(G)
-                x_hat_k = G_inv @ H_eff_k_H @ y_k  # [rank_used]
-                layers_rx[:, data_idx] = x_hat_k
-            except np.linalg.LinAlgError:
-                # Matriz singular, usar 0
-                layers_rx[:, data_idx] = 0
+        # MIMO Detection usando el detector configurado (MMSE/IRC o SIC)
+        layers_rx = mimo_detector.detect(
+            y_received=y_data,
+            H_channel=H_data,
+            noise_variance=noise_variance,
+            W_precoder=W_precoder
+        )  # [rank_used, num_data]
         
         # Layer demapping
         symbols_rx = layer_mapper.demap_from_layers(layers_rx, original_length=num_data_subcarriers)

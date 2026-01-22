@@ -45,6 +45,12 @@ class MIMODetector:
         print(f"  Detector: {self.detector_type}")
         print(f"  Antenas RX: {num_rx}")
         print(f"  Capas: {num_layers}")
+        print(f"  Constelación presente: {self.symbol_detector is not None}")
+        if self.symbol_detector is not None:
+            if isinstance(self.symbol_detector, np.ndarray):
+                print(f"  Constelación tipo: numpy array, size={len(self.symbol_detector)}")
+            else:
+                print(f"  Constelación tipo: {type(self.symbol_detector)}")
     
     def detect(self, y_received, H_channel, noise_variance, W_precoder=None):
         """
@@ -108,15 +114,20 @@ class MIMODetector:
             H_eff = H[:, :self.num_layers]
         
         # Seleccionar detector
+        print(f"[_detect_single] detector_type={self.detector_type}")
         if self.detector_type == 'MMSE' or self.detector_type == 'IRC':
+            print(f"[_detect_single] Ejecutando MMSE")
             return self._mmse_detect(y, H_eff, sigma2)
         elif self.detector_type == 'ZF':
+            print(f"[_detect_single] Ejecutando ZF")
             return self._zf_detect(y, H_eff)
         elif self.detector_type == 'SIC':
+            print(f"[_detect_single] Ejecutando SIC")
             return self._sic_detect(y, H_eff, sigma2)
         elif self.detector_type == 'MRC':
             if self.num_layers != 1:
                 raise ValueError("MRC solo soporta num_layers=1 (rank-1)")
+            print(f"[_detect_single] Ejecutando MRC")
             return self._mrc_detect(y, H_eff)
         else:
             raise ValueError(f"Detector '{self.detector_type}' no soportado")
@@ -209,6 +220,8 @@ class MIMODetector:
         Returns:
             s_hat: [num_layers]
         """
+        print(f"[_sic_detect] ENTRADA: num_layers={self.num_layers}, |y|={np.linalg.norm(y):.3f}")
+        
         if self.symbol_detector is None:
             # Si no hay detector, usar MMSE en vez de SIC
             print("[WARNING] SIC requiere constellation, usando MMSE")
@@ -227,6 +240,9 @@ class MIMODetector:
         # Ordenar capas por SINR (descendente)
         layer_order = np.argsort(sinr_per_layer)[::-1]
         
+        # DEBUG: Guardar H original para cancelación correcta
+        H_original = H_eff.copy()
+        
         # Detección sucesiva
         for iteration in range(self.num_layers):
             layer_idx = layer_order[iteration]  # Índice absoluto en s_hat
@@ -238,6 +254,10 @@ class MIMODetector:
             s_mmse = self._mmse_detect_single_layer(
                 y_residual, H_remaining, sigma2, relative_idx
             )
+            
+            # DEBUG
+            if iteration == 0:
+                print(f"[SIC DEBUG] Iteración {iteration}: layer_idx={layer_idx}, relative_idx={relative_idx}, |s_mmse|={np.abs(s_mmse):.3f}")
             
             # Hard decision: encontrar símbolo más cercano en constelación
             if self.symbol_detector is not None and isinstance(self.symbol_detector, np.ndarray):
@@ -257,12 +277,24 @@ class MIMODetector:
             s_hat[layer_idx] = s_hard
             detected_order.append(layer_idx)
             
-            # Regenerar interferencia de esta capa
-            h_layer = H_remaining[:, relative_idx]
+            # DEBUG
+            if iteration == 0:
+                print(f"[SIC DEBUG] Hard decision: s_hard={s_hard:.3f}, diff={np.abs(s_hard - s_mmse):.3f}")
+            
+            # Regenerar interferencia de esta capa usando H ORIGINAL
+            h_layer = H_original[:, layer_idx]  # FIX: usar columna de H original, no H_remaining
             interference = h_layer * s_hard
+            
+            # DEBUG
+            if iteration == 0:
+                print(f"[SIC DEBUG] |h_layer|={np.linalg.norm(h_layer):.3f}, |interferencia|={np.linalg.norm(interference):.3f}, |y_residual|={np.linalg.norm(y_residual):.3f}")
             
             # Cancelar interferencia
             y_residual = y_residual - interference
+            
+            # DEBUG
+            if iteration == 0:
+                print(f"[SIC DEBUG] Después de cancelar: |y_residual|={np.linalg.norm(y_residual):.3f}")
             
             # Remover esta capa de H y de remaining_layers (para siguiente iteración)
             if iteration < self.num_layers - 1:
