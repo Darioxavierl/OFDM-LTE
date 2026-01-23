@@ -197,7 +197,7 @@ class ResourceMapper:
         data_indices = self.grid.get_data_indices()
         pilot_indices = self.grid.get_pilot_indices()
         
-        # Mapear datos
+        # Mapear datos (sin interleaving - se hace a nivel de símbolos si es necesario)
         num_data_to_map = min(len(data_symbols), len(data_indices))
         grid_mapped[data_indices[:num_data_to_map]] = data_symbols[:num_data_to_map]
         

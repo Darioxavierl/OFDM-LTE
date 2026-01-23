@@ -736,6 +736,607 @@ class OFDMSimulator:
         self.last_results = results
         return results
     
+    def calculate_noise_var_zf(self, H_estimate: np.ndarray, snr_db: float) -> float:
+        """
+        Calcula la varianza de ruido efectiva después de ZF equalization
+        
+        Zero-Forcing amplifica el ruido inversamente proporcional a |H|².
+        Para canales con selectividad de frecuencia (multipath), usamos un
+        enfoque conservador basado en el promedio armónico de |H|² para
+        capturar el peor caso (portadoras con canal débil).
+        
+        Formula:
+            σ²_eff = σ²_n / |H|²_harmonic
+        
+        donde |H|²_harmonic = N / sum(1/|H|²) es más conservador que el promedio.
+        
+        Parameters:
+        -----------
+        H_estimate : np.ndarray
+            Estimación del canal (complejos) para cada portadora
+        snr_db : float
+            SNR del canal en dB
+        
+        Returns:
+        --------
+        float : Varianza de ruido efectiva (σ²_eff)
+        """
+        if H_estimate.size == 0:
+            # Sin estimación, usar solo el ruido base del canal
+            return 1.0 / (10 ** (snr_db / 10))
+        
+        # Convertir a array si es escalar
+        H_estimate = np.atleast_1d(H_estimate)
+        
+        # 1. Varianza de ruido base del canal
+        noise_var_channel = 1.0 / (10 ** (snr_db / 10))
+        
+        # 2. Calcular potencia del canal |H|²
+        H_power = np.abs(H_estimate) ** 2
+        
+        # Evitar divisiones por cero
+        H_power = np.maximum(H_power, 1e-12)
+        
+        # 3. Si es un solo valor (flat fading), usar directamente
+        if len(H_power) == 1:
+            noise_var_eff = noise_var_channel / H_power[0]
+        else:
+            # Múltiples portadoras: usar promedio armónico (más conservador para multipath)
+            # mean_harmonic = N / sum(1/x)
+            H_power_harmonic = len(H_power) / np.sum(1.0 / H_power)
+            noise_var_eff = noise_var_channel / H_power_harmonic
+        
+        return noise_var_eff
+    
+    def _calculate_llrs_qpsk(self, symbols: np.ndarray, noise_var: np.ndarray) -> np.ndarray:
+        """
+        Calcula LLRs para QPSK (2 bits por símbolo)
+        
+        QPSK Gray mapping:
+        00 -> +1+1j  (I=+1, Q=+1)
+        01 -> +1-1j  (I=+1, Q=-1)
+        10 -> -1+1j  (I=-1, Q=+1)
+        11 -> -1-1j  (I=-1, Q=-1)
+        
+        LLR(b) = log(P(b=0|y) / P(b=1|y))
+        Para QPSK: LLR_I = 2*Re(y)*sqrt(2)/σ², LLR_Q = 2*Im(y)*sqrt(2)/σ²
+        """
+        scale = np.sqrt(2)
+        llr_i = (2.0 / noise_var) * symbols.real * scale
+        llr_q = (2.0 / noise_var) * symbols.imag * scale
+        
+        # Intercalar LLRs: [I0, Q0, I1, Q1, ...]
+        llrs = np.zeros(2 * len(symbols), dtype=np.float64)
+        llrs[0::2] = llr_i
+        llrs[1::2] = llr_q
+        
+        return llrs
+    
+    def _calculate_llrs_16qam(self, symbols: np.ndarray, noise_var: np.ndarray) -> np.ndarray:
+        """
+        Calcula LLRs para 16-QAM usando método max-log-MAP
+        
+        16-QAM: mapeo binario directo (NO Gray) como en QAMModulator
+        Índice binario [b3 b2 b1 b0] → símbolo constellation[índice]
+        """
+        # Normalización 16-QAM
+        scale = np.sqrt(10)
+        
+        # Asegurar que noise_var es array
+        if np.isscalar(noise_var):
+            noise_var = np.full(len(symbols), noise_var)
+        
+        # Generar constelación exactamente como QAMModulator
+        real_vals = np.array([-3, -1, 1, 3])
+        imag_vals = np.array([-3, -1, 1, 3])
+        constellation = []
+        bit_map = []
+        
+        # Mapeo binario directo (mismo orden que QAMModulator)
+        idx = 0
+        for r in real_vals:
+            for i in imag_vals:
+                constellation.append((r + 1j * i) / scale)
+                # Índice binario: bits = [b3, b2, b1, b0]
+                bits = [(idx >> (3-b)) & 1 for b in range(4)]
+                bit_map.append(bits)
+                idx += 1
+        
+        constellation = np.array(constellation)
+        bit_map = np.array(bit_map, dtype=int)
+        
+        # Calcular LLRs
+        llrs = np.zeros(4 * len(symbols), dtype=np.float64)
+        
+        for sym_idx in range(len(symbols)):
+            y = symbols[sym_idx]
+            sigma2 = noise_var[sym_idx]
+            
+            for bit_pos in range(4):
+                idx_bit0 = np.where(bit_map[:, bit_pos] == 0)[0]
+                dist_bit0 = np.abs(y - constellation[idx_bit0])**2
+                min_dist_bit0 = np.min(dist_bit0)
+                
+                idx_bit1 = np.where(bit_map[:, bit_pos] == 1)[0]
+                dist_bit1 = np.abs(y - constellation[idx_bit1])**2
+                min_dist_bit1 = np.min(dist_bit1)
+                
+                llr = (min_dist_bit1 - min_dist_bit0) / (2.0 * sigma2)
+                llr = np.clip(llr, -10.0, 10.0)  # Clipping para evitar saturación del decoder
+                llrs[sym_idx * 4 + bit_pos] = llr
+        
+        return llrs
+    
+    def _calculate_llrs_64qam(self, symbols: np.ndarray, noise_var: np.ndarray) -> np.ndarray:
+        """
+        Calcula LLRs para 64-QAM usando método max-log-MAP
+        
+        64-QAM: mapeo binario directo (NO Gray) como en QAMModulator
+        Índice binario [b5 b4 b3 b2 b1 b0] → símbolo constellation[índice]
+        """
+        # Normalización 64-QAM
+        scale = np.sqrt(42)
+        
+        # Asegurar que noise_var es array
+        if np.isscalar(noise_var):
+            noise_var = np.full(len(symbols), noise_var)
+        
+        # Generar constelación exactamente como QAMModulator
+        real_vals = np.array([-7, -5, -3, -1, 1, 3, 5, 7])
+        imag_vals = np.array([-7, -5, -3, -1, 1, 3, 5, 7])
+        constellation = []
+        bit_map = []
+        
+        # Mapeo binario directo (mismo orden que QAMModulator)
+        idx = 0
+        for r in real_vals:
+            for i in imag_vals:
+                constellation.append((r + 1j * i) / scale)
+                # Índice binario: bits = [b5, b4, b3, b2, b1, b0]
+                bits = [(idx >> (5-b)) & 1 for b in range(6)]
+                bit_map.append(bits)
+                idx += 1
+        
+        constellation = np.array(constellation)
+        bit_map = np.array(bit_map, dtype=int)
+        
+        # Calcular LLRs
+        llrs = np.zeros(6 * len(symbols), dtype=np.float64)
+        
+        for sym_idx in range(len(symbols)):
+            y = symbols[sym_idx]
+            sigma2 = noise_var[sym_idx]
+            
+            for bit_pos in range(6):
+                idx_bit0 = np.where(bit_map[:, bit_pos] == 0)[0]
+                dist_bit0 = np.abs(y - constellation[idx_bit0])**2
+                min_dist_bit0 = np.min(dist_bit0)
+                
+                idx_bit1 = np.where(bit_map[:, bit_pos] == 1)[0]
+                dist_bit1 = np.abs(y - constellation[idx_bit1])**2
+                min_dist_bit1 = np.min(dist_bit1)
+                
+                llr = (min_dist_bit1 - min_dist_bit0) / (2.0 * sigma2)
+                llr = np.clip(llr, -10.0, 10.0)  # Clipping para evitar saturación del decoder
+                llrs[sym_idx * 6 + bit_pos] = llr
+        
+        return llrs
+    
+    def simulate_siso_coded(self, bits: np.ndarray, snr_db: float = 10.0) -> Dict:
+        """
+        Simulate SISO transmission WITH channel coding (CRC + Turbo)
+        
+        Este método implementa el MISMO flujo que simulate_siso() pero agregando:
+        - TX: CRC-24A → Segmentation → Turbo Encoding → Rate Matching
+        - RX: LLR generation → Rate Dematching → Turbo Decoding → CRC Check
+        
+        La infraestructura (TX, Channel, RX) es la MISMA que simulate_siso().
+        Esto permite comparación directa entre coded vs uncoded.
+        
+        IMPORTANTE:
+        - NO modifica simulate_siso() existente (backward compatible)
+        - Usa misma modulación, resource mapping, channel estimation
+        - Solo agrega capas de channel coding
+        
+        Parameters:
+        -----------
+        bits : np.ndarray
+            Input bit array (0s and 1s) - Transport block
+        snr_db : float
+            Signal-to-Noise Ratio in dB
+        
+        Returns:
+        --------
+        dict : Complete simulation results
+            - transmitted_bits: Number of transport block bits
+            - received_bits: Number of decoded bits
+            - bit_errors: Number of bit errors (before CRC check)
+            - ber: Bit Error Rate
+            - crc_pass: True if CRC check passed
+            - snr_db: SNR used
+            - papr_db: PAPR in dB
+            - coded_bits_length: Length after channel coding
+            - signal_tx: Transmitted signal
+            - signal_rx: Received signal
+            - symbols_tx: Transmitted symbols
+            - symbols_rx: Received symbols (equalized)
+            - H_estimate: Channel estimate
+            - noise_var_eff: Effective noise variance for LLRs
+        
+        Example:
+        --------
+        >>> sim = OFDMSimulator(config)
+        >>> bits = np.random.randint(0, 2, 1000)
+        >>> result = sim.simulate_siso_coded(bits, snr_db=10.0)
+        >>> result['crc_pass']
+        True
+        """
+        from core.channel_coding.crc import attach_crc24a, check_crc24a
+        from core.channel_coding.segmentation import segment_code_blocks, desegment_code_blocks
+        from core.channel_coding.turbo_encoder import turbo_encode
+        from core.channel_coding.turbo_decoder import turbo_decode
+        from core.channel_coding.rate_matching import rate_match_turbo, rate_dematching_turbo
+        from core.modulator import qpsk_to_llrs
+        from core.lte_receiver import LTEReceiver
+        
+        if not isinstance(bits, np.ndarray):
+            bits = np.array(bits, dtype=np.uint8)
+        
+        if bits.size == 0:
+            raise ValueError("Bits array cannot be empty")
+        
+        # Soporta QPSK, 16-QAM y 64-QAM
+        supported_modulations = ['QPSK', '16-QAM', '64-QAM']
+        if self.config.modulation not in supported_modulations:
+            raise ValueError(
+                f"Modulation {self.config.modulation} not supported. "
+                f"Supported: {supported_modulations}"
+            )
+        
+        original_num_bits = len(bits)
+        bits_per_symbol = self.config.bits_per_symbol  # 2, 4, o 6
+        
+        # =====================================================================
+        # TRANSMITTER - Channel Coding Chain
+        # =====================================================================
+        
+        # Step 1: Attach CRC-24A (Transport Block CRC)
+        bits_with_crc = attach_crc24a(bits)
+        
+        # Step 2: Code Block Segmentation
+        code_blocks, seg_metadata = segment_code_blocks(bits_with_crc)
+        
+        # Step 3: Turbo Encoding (rate 1/3)
+        encoded_blocks = []
+        for cb in code_blocks:
+            encoded = turbo_encode(cb)
+            encoded_blocks.append(encoded)
+        
+        # Step 4: Rate Matching (sub-block interleaving + bit collection)
+        # Para este ejemplo, usamos E = len(encoded_block) (sin puncturing)
+        rate_matched_blocks = []
+        for cb, encoded in zip(code_blocks, encoded_blocks):
+            K = len(cb)  # Longitud del code block original
+            E = len(encoded)  # Sin acortamiento por ahora
+            rate_matched = rate_match_turbo(encoded, E, K, rv_idx=0)
+            rate_matched_blocks.append(rate_matched)
+        
+        # Concatenar todos los bloques codificados
+        coded_bits = np.concatenate(rate_matched_blocks)
+        coded_bits_length = len(coded_bits)
+        
+        # =====================================================================
+        # TRANSMITTER - Modulation (igual que simulate_siso)
+        # =====================================================================
+        
+        # Step 5: Modulate (QPSK/16-QAM/64-QAM)
+        from .modulator import QAMModulator
+        qam_modulator = QAMModulator(modulation_type=self.config.modulation)
+        qam_symbols = qam_modulator.bits_to_symbols(coded_bits)
+        
+        # Step 5b: Time-Frequency Interleaving
+        # Dispersar símbolos codificados para romper correlación de errores
+        # Interleaver de bloque: escribir por filas, leer por columnas
+        num_symbols = len(qam_symbols)
+        num_data_per_ofdm = len(self.tx.modulator.resource_mapper.get_data_indices())  # Portadoras de datos por símbolo OFDM
+        
+        # Determinar tamaño de bloque: num_rows x num_cols
+        # num_cols = portadoras de datos por símbolo OFDM
+        # num_rows = ceil(num_symbols / num_cols)
+        num_cols = num_data_per_ofdm
+        num_rows = int(np.ceil(num_symbols / num_cols))
+        
+        # Padding si es necesario
+        total_size = num_rows * num_cols
+        if num_symbols < total_size:
+            qam_symbols_padded = np.pad(qam_symbols, (0, total_size - num_symbols), 'constant', constant_values=0)
+        else:
+            qam_symbols_padded = qam_symbols[:total_size]
+        
+        # Reshape: escribir por filas (C order)
+        interleaver_matrix = qam_symbols_padded.reshape(num_rows, num_cols)
+        
+        # Leer por columnas (Fortran order)
+        interleaved_symbols = interleaver_matrix.T.flatten()
+        
+        # Step 5c: Map symbols to resource grid and transmit
+        from .resource_mapper import ResourceMapper
+        resource_mapper = ResourceMapper(self.config)
+        
+        # Crear señal OFDM de interleaved_symbols
+        all_ofdm_signals = []
+        num_data_subcarriers = len(resource_mapper.get_data_indices())
+        
+        # Dividir símbolos en bloques para cada símbolo OFDM
+        num_ofdm_symbols_needed = int(np.ceil(len(interleaved_symbols) / num_data_subcarriers))
+        
+        for ofdm_idx in range(num_ofdm_symbols_needed):
+            start_idx = ofdm_idx * num_data_subcarriers
+            end_idx = min(start_idx + num_data_subcarriers, len(interleaved_symbols))
+            
+            # Símbolos para este símbolo OFDM
+            data_symbols = interleaved_symbols[start_idx:end_idx]
+            
+            # Padding si es necesario
+            if len(data_symbols) < num_data_subcarriers:
+                data_symbols = np.pad(data_symbols, (0, num_data_subcarriers - len(data_symbols)), 'constant', constant_values=0)
+            
+            # Map symbols to resource grid
+            grid_mapped, _ = resource_mapper.map_symbols(data_symbols)
+            
+            # IFFT
+            time_domain = np.fft.ifft(grid_mapped) * np.sqrt(self.config.N)
+            
+            # Add cyclic prefix
+            ofdm_signal = np.concatenate([
+                time_domain[-self.config.cp_length:],
+                time_domain
+            ])
+            
+            all_ofdm_signals.append(ofdm_signal)
+        
+        signal_tx = np.concatenate(all_ofdm_signals)
+        mapping_info = {'num_ofdm_symbols': num_ofdm_symbols_needed}
+        
+        # Step 6: Calculate PAPR
+        papr_info = self.tx.calculate_papr(signal_tx)
+        
+        # =====================================================================
+        # CHANNEL - Transmission (igual que simulate_siso)
+        # =====================================================================
+        
+        # Step 7: Transmit through channel
+        self.channels[0].set_snr(snr_db)
+        signal_rx = self.channels[0].transmit(signal_tx)
+        
+        # =====================================================================
+        # RECEIVER - Demodulation with Channel Estimation
+        # =====================================================================
+        
+        # Step 8: Create LTE Receiver with channel estimation enabled
+        lte_receiver = LTEReceiver(
+            self.config,
+            cell_id=0,
+            enable_equalization=True,  # ZF equalization
+            enable_sc_fdm=self.enable_sc_fdm
+        )
+        
+        # Step 9: Demodulate OFDM stream (FFT + remove CP)
+        all_ofdm_symbols = lte_receiver._demodulate_ofdm_stream(signal_rx)
+        
+        if not all_ofdm_symbols:
+            raise ValueError("No OFDM symbols received")
+        
+        # Step 10: Estimate channel periodically (per OFDM symbol)
+        channel_estimates_per_symbol, channel_snr_db = lte_receiver._estimate_channel_periodic(
+            all_ofdm_symbols
+        )
+        
+        # Step 11: Equalize symbols (ZF) and collect H estimates for data subcarriers
+        data_indices = lte_receiver.resource_grid.get_data_indices()
+        
+        # IMPORTANTE: Calcular num_coded_symbols ANTES de de-interleaving
+        # Usar bits_per_symbol del config (2 para QPSK, 4 para 16-QAM, 6 para 64-QAM)
+        num_coded_symbols = coded_bits_length // bits_per_symbol
+        
+        equalized_symbols_per_symbol = []
+        H_estimates_data = []  # H estimates para portadoras de datos
+        
+        for i, ofdm_sym in enumerate(all_ofdm_symbols):
+            if i < len(channel_estimates_per_symbol):
+                H_est = channel_estimates_per_symbol[i]
+            else:
+                # Fallback: usar última estimación disponible
+                H_est = channel_estimates_per_symbol[-1]
+            
+            eq_sym = lte_receiver.equalizer.equalize(ofdm_sym, H_est)
+            equalized_symbols_per_symbol.append(eq_sym)
+            
+            # Extraer H estimates solo para las portadoras de datos
+            if isinstance(H_est, np.ndarray) and len(H_est) > 1:
+                H_data = H_est[data_indices]
+                H_estimates_data.append(H_data)
+            else:
+                # Si H_est es escalar o mono-elemento, replicar para todas las portadoras de datos
+                H_scalar = H_est if np.isscalar(H_est) else (H_est[0] if len(H_est) == 1 else np.mean(H_est))
+                H_data = np.full(len(data_indices), H_scalar)
+                H_estimates_data.append(H_data)
+        
+        # Step 12: Extract data symbols (remove pilots)
+        all_data_symbols = []
+        for eq_sym in equalized_symbols_per_symbol:
+            data_syms = eq_sym[data_indices]
+            all_data_symbols.append(data_syms)
+        
+        symbols_rx_interleaved = np.concatenate(all_data_symbols)
+        H_estimates_all_data_interleaved = np.concatenate(H_estimates_data)
+        
+        # Step 12b: Time-Frequency De-Interleaving
+        # Revertir el interleaving: leer por columnas, escribir por filas
+        num_data_per_ofdm = len(data_indices)
+        
+        # Calcular dimensiones del interleaver (mismas que TX)
+        num_cols = num_data_per_ofdm
+        num_rows = int(np.ceil(num_coded_symbols / num_cols))
+        total_size = num_rows * num_cols
+        
+        # Truncar o pad símbolos recibidos si es necesario
+        if len(symbols_rx_interleaved) < total_size:
+            symbols_rx_padded = np.pad(symbols_rx_interleaved, (0, total_size - len(symbols_rx_interleaved)), 'constant', constant_values=0)
+            H_padded = np.pad(H_estimates_all_data_interleaved, (0, total_size - len(H_estimates_all_data_interleaved)), 'edge')
+        else:
+            symbols_rx_padded = symbols_rx_interleaved[:total_size]
+            H_padded = H_estimates_all_data_interleaved[:total_size]
+        
+        # Reshape según columnas (símbolos leídos por columnas en TX)
+        deinterleaver_matrix = symbols_rx_padded.reshape(num_cols, num_rows)
+        H_matrix = H_padded.reshape(num_cols, num_rows)
+        
+        # Leer por filas (revertir T.flatten())
+        symbols_rx_data = deinterleaver_matrix.T.flatten()[:num_coded_symbols]
+        H_estimates_all_data = H_matrix.T.flatten()[:num_coded_symbols]
+        
+        # Validar longitud final
+        if len(symbols_rx_data) > num_coded_symbols:
+            symbols_rx_data = symbols_rx_data[:num_coded_symbols]
+            H_estimates_all_data = H_estimates_all_data[:num_coded_symbols]
+        elif len(symbols_rx_data) < num_coded_symbols:
+            pad_length = num_coded_symbols - len(symbols_rx_data)
+            symbols_rx_data = np.pad(symbols_rx_data, (0, pad_length), 'constant', constant_values=0.0)
+            if len(H_estimates_all_data) > 0:
+                H_estimates_all_data = np.pad(H_estimates_all_data, (0, pad_length), 'edge')
+        
+        # =====================================================================
+        # RECEIVER - LLR Generation (SOFT DEMODULATION)
+        # =====================================================================
+        
+        # Step 13: Calculate effective noise variance PER SUBCARRIER for LLRs
+        # Step 13: Calculate effective noise variance PER SUBCARRIER for LLRs
+        # 
+        # En canal multipath con ZF equalization:
+        #   - Símbolos equalizados: y_eq[k] = s[k] + n[k]/H[k]
+        #   - Varianza del ruido amplificado: σ²_eff[k] = σ²_n / |H[k]|²
+        #   - LLR debe reflejar confiabilidad por portadora
+        #
+        # CRÍTICO: Cada portadora tiene SNR diferente debido a desvanecimiento selectivo
+        # Los LLRs deben ser proporcionales al SNR efectivo de cada símbolo
+        
+        sigma2_n = 1.0 / (10 ** (snr_db / 10))  # Varianza de ruido base
+        
+        if hasattr(self.channels[0], 'channel_type') and self.channels[0].channel_type == 'awgn':
+            # AWGN: noise_var constante para todos los símbolos
+            noise_var_per_symbol = np.full(len(symbols_rx_data), sigma2_n)
+        else:
+            # Rayleigh/Multipath: calcular noise_var_eff por portadora
+            # Después de ZF: σ²_eff[k] = σ²_n / |H[k]|²
+            H_power = np.abs(H_estimates_all_data) ** 2
+            # Evitar divisiones por cero y limitar valores extremos
+            H_power = np.clip(H_power, 1e-6, 1e6)  # Limitar rango dinámico
+            noise_var_per_symbol = sigma2_n / H_power
+            
+            # CRÍTICO: Limitar LLRs para evitar saturación del decoder
+            # Estrategia: Limitar amplificación conservadoramente
+            # En SNR bajos (≤6dB), el ruido domina y clipping muy agresivo descarta info útil
+            # En SNR altos (≥9dB), el clipping protege contra deep fades
+            # Compromiso: 6dB máximo (4x amplificación)
+            noise_var_min = sigma2_n / 4.0  # Max 6dB de amplificación por ZF
+            noise_var_per_symbol = np.maximum(noise_var_per_symbol, noise_var_min)
+        
+        # Step 14: Generate LLRs from symbols usando noise_var por símbolo
+        # Soporta QPSK, 16-QAM y 64-QAM
+        if self.config.modulation == 'QPSK':
+            llrs = self._calculate_llrs_qpsk(symbols_rx_data, noise_var_per_symbol)
+        elif self.config.modulation == '16-QAM':
+            llrs = self._calculate_llrs_16qam(symbols_rx_data, noise_var_per_symbol)
+        elif self.config.modulation == '64-QAM':
+            llrs = self._calculate_llrs_64qam(symbols_rx_data, noise_var_per_symbol)
+        else:
+            raise ValueError(f"Unsupported modulation: {self.config.modulation}")
+        
+        # Truncar LLRs a la longitud de bits codificados
+        if len(llrs) > coded_bits_length:
+            llrs = llrs[:coded_bits_length]
+        elif len(llrs) < coded_bits_length:
+            # Padding con LLRs neutrales (0)
+            llrs = np.pad(llrs, (0, coded_bits_length - len(llrs)), 'constant', constant_values=0.0)
+        
+        # =====================================================================
+        # RECEIVER - Channel Decoding Chain
+        # =====================================================================
+        
+        # Step 15: Rate Dematching
+        # Dividir LLRs en bloques (asumiendo misma estructura que TX)
+        llr_blocks = []
+        offset = 0
+        for i, (cb, rm_block) in enumerate(zip(code_blocks, rate_matched_blocks)):
+            E = len(rm_block)
+            llr_block = llrs[offset:offset + E]
+            offset += E
+            
+            # Rate dematch
+            K = len(cb)  # Longitud del code block original
+            llr_dematched = rate_dematching_turbo(llr_block, K, rv_idx=0)
+            llr_blocks.append(llr_dematched)
+        
+        # Step 16: Turbo Decoding
+        decoded_blocks = []
+        for i, llr_block in enumerate(llr_blocks):
+            K = len(code_blocks[i])  # Longitud del code block original
+            decoded = turbo_decode(llr_block, K=K, num_iterations=8)
+            decoded_blocks.append(decoded)
+        
+        # Step 17: Desegmentation
+        decoded_bits_with_crc = desegment_code_blocks(decoded_blocks, seg_metadata)
+        
+        # Step 18: CRC Check
+        crc_pass = check_crc24a(decoded_bits_with_crc)
+        
+        # Step 19: Remove CRC
+        if len(decoded_bits_with_crc) >= 24:
+            decoded_bits = decoded_bits_with_crc[:-24]
+        else:
+            decoded_bits = decoded_bits_with_crc
+        
+        # =====================================================================
+        # Calculate BER
+        # =====================================================================
+        
+        # Ajustar longitud para comparación
+        if len(decoded_bits) < original_num_bits:
+            decoded_bits = np.pad(decoded_bits, (0, original_num_bits - len(decoded_bits)), 'constant')
+        else:
+            decoded_bits = decoded_bits[:original_num_bits]
+        
+        bit_errors = np.sum(bits != decoded_bits)
+        ber = bit_errors / original_num_bits
+        
+        # =====================================================================
+        # Return Results
+        # =====================================================================
+        
+        results = {
+            'transmitted_bits': int(original_num_bits),
+            'received_bits': int(original_num_bits),
+            'bits_received_array': decoded_bits,
+            'bit_errors': int(bit_errors),
+            'ber': float(ber),
+            'crc_pass': bool(crc_pass),
+            'snr_db': float(snr_db),
+            'papr_db': float(papr_info['papr_db']),
+            'papr_linear': float(papr_info['papr_linear']),
+            'coded_bits_length': int(coded_bits_length),
+            'signal_tx': signal_tx,
+            'signal_rx': signal_rx,
+            'symbols_tx': qam_symbols,  # Símbolos QAM originales (antes de interleaving)
+            'symbols_rx': symbols_rx_data,
+            'H_estimate': H_estimates_all_data,  # Array con H por portadora de datos
+            'channel_snr_db': float(channel_snr_db),
+            'noise_var_mean': float(np.mean(noise_var_per_symbol))
+        }
+        
+        self.last_results = results
+        return results
+    
     def _demodulate_with_channel_est(self, signal_rx: np.ndarray) -> Tuple[np.ndarray, List[np.ndarray]]:
         """
         Demodulate a single RX antenna signal and estimate its channel via CRS per OFDM symbol

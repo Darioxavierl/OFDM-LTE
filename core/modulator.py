@@ -419,3 +419,108 @@ class OFDMModulator:
         """Retorna el modulador QAM para acceso directo"""
         return self.qam_modulator
 
+
+def qpsk_to_llrs(symbols: np.ndarray, noise_var: float) -> np.ndarray:
+    """
+    Convierte símbolos QPSK a LLRs (Log-Likelihood Ratios) para decodificación soft
+    
+    QPSK: Constelación {+1+1j, +1-1j, -1+1j, -1-1j} / sqrt(2)
+    
+    LLR Calculation:
+        Para bit en posición real: LLR_I = (2/σ²) * Re(y) * scale
+        Para bit en posición imag: LLR_Q = (2/σ²) * Im(y) * scale
+    
+    Convención LLR:
+        LLR > 0 → bit más probable = 0
+        LLR < 0 → bit más probable = 1
+    
+    Parameters:
+    -----------
+    symbols : np.ndarray
+        Símbolos QPSK recibidos (complejos, potencialmente con ruido)
+    noise_var : float
+        Varianza de ruido efectiva (σ²)
+    
+    Returns:
+    --------
+    np.ndarray : LLRs intercalados [LLR_I0, LLR_Q0, LLR_I1, LLR_Q1, ...]
+    
+    Example:
+    --------
+    >>> symbols = np.array([0.7+0.7j, 0.6-0.8j])  # QPSK con ruido
+    >>> noise_var = 0.1
+    >>> llrs = qpsk_to_llrs(symbols, noise_var)
+    >>> len(llrs)
+    4
+    """
+    if symbols.size == 0:
+        return np.array([], dtype=np.float64)
+    
+    # QPSK normalizado por sqrt(2) tiene energía = 1
+    # Los símbolos están en {±1±1j}/sqrt(2), entonces scale = sqrt(2)
+    scale = np.sqrt(2)
+    
+    # Calcular LLRs para componente real (bit I)
+    llr_i = (2.0 / noise_var) * symbols.real * scale
+    
+    # Calcular LLRs para componente imaginaria (bit Q)
+    llr_q = (2.0 / noise_var) * symbols.imag * scale
+    
+    # Intercalar LLRs: [I0, Q0, I1, Q1, I2, Q2, ...]
+    num_symbols = len(symbols)
+    llrs = np.zeros(2 * num_symbols, dtype=np.float64)
+    llrs[0::2] = llr_i  # Posiciones pares: bits I
+    llrs[1::2] = llr_q  # Posiciones impares: bits Q
+    
+    return llrs
+
+
+def qam16_to_llrs(symbols: np.ndarray, noise_var: float) -> np.ndarray:
+    """
+    Convierte símbolos 16-QAM a LLRs para decodificación soft
+    
+    16-QAM: Constelación 4x4 con 4 bits por símbolo
+    
+    Parameters:
+    -----------
+    symbols : np.ndarray
+        Símbolos 16-QAM recibidos (complejos)
+    noise_var : float
+        Varianza de ruido efectiva
+    
+    Returns:
+    --------
+    np.ndarray : LLRs para los 4 bits de cada símbolo
+    
+    Note:
+    -----
+    Placeholder para futura implementación completa
+    """
+    # TODO: Implementar LLR calculation para 16-QAM usando max-log-MAP
+    raise NotImplementedError("16-QAM LLR generation not yet implemented")
+
+
+def qam64_to_llrs(symbols: np.ndarray, noise_var: float) -> np.ndarray:
+    """
+    Convierte símbolos 64-QAM a LLRs para decodificación soft
+    
+    64-QAM: Constelación 8x8 con 6 bits por símbolo
+    
+    Parameters:
+    -----------
+    symbols : np.ndarray
+        Símbolos 64-QAM recibidos (complejos)
+    noise_var : float
+        Varianza de ruido efectiva
+    
+    Returns:
+    --------
+    np.ndarray : LLRs para los 6 bits de cada símbolo
+    
+    Note:
+    -----
+    Placeholder para futura implementación completa
+    """
+    # TODO: Implementar LLR calculation para 64-QAM usando max-log-MAP
+    raise NotImplementedError("64-QAM LLR generation not yet implemented")
+
